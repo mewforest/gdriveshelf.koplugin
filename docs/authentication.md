@@ -23,7 +23,7 @@ python3 tools/authorize.py \
   --output /path/to/gdriveshelf-credentials.json
 ```
 
-From a release ZIP, use `gdriveshelf-tools/authorize.py` instead of `tools/authorize.py`.
+For an installed release, download [gdriveshelf-authorize.py](https://github.com/mewforest/gdriveshelf.koplugin/releases/latest/download/gdriveshelf-authorize.py) separately and use that filename instead of `tools/authorize.py`. The plugin ZIP contains only the installable plugin folder.
 
 The helper opens your system browser. Sign in on Google’s website, review the permissions, and approve access. It does not ask for your Google password. Authorization retrieves tokens and your Drive account identifier; it does not change your Drive files.
 
@@ -34,9 +34,11 @@ The helper uses PKCE S256, a random `state`, and a temporary callback listener b
 ## 3. Import into KOReader
 
 1. Transfer `gdriveshelf-credentials.json` to a location KOReader can access.
-2. Open **GDriveShelf → Settings** and choose the credentials JSON import action.
+2. Open **GDriveShelf** and select **Choose authorization JSON** on the connection screen. Import also remains available in Settings.
 3. Select the generated credentials file. Do not select the original OAuth client JSON.
 4. After a successful import, remove unnecessary copies from Downloads and the transfer device.
+
+Downloads is a suitable location; the file does not belong in the plugin folder. On Android the usual path is `/storage/emulated/0/Download/gdriveshelf-credentials.json`. The picker starts at KOReader's home folder. You can also choose **Enter JSON file path**. If KOReader cannot access the file, check its storage permission in Android settings.
 
 The generated JSON contains the OAuth client configuration, access and refresh tokens, expiry, scope, a stable `account_id` based on Drive’s `user.permissionId`, and the account email for display. The helper saves it atomically with owner-only permissions (`0600`) and does not print tokens. The plugin keeps a private local copy and saves refreshed credentials there.
 

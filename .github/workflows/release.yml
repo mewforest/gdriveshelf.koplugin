@@ -53,5 +53,7 @@ jobs:
           gh release create "v${version}" \
             "dist/gdriveshelf.koplugin-${version}.zip" \
             "dist/gdriveshelf.koplugin-${version}.zip.sha256" \
+            "dist/gdriveshelf-authorize.py" \
+            "dist/gdriveshelf-authorize.py.sha256" \
             --target "$TARGET_SHA" --generate-notes \
             --title "GDriveShelf ${version}"

@@ -23,7 +23,7 @@ python3 tools/authorize.py \
   --output /path/to/gdriveshelf-credentials.json
 ```
 
-В ZIP релиза используйте `gdriveshelf-tools/authorize.py` вместо `tools/authorize.py`.
+Для установленного релиза скачайте отдельно [gdriveshelf-authorize.py](https://github.com/mewforest/gdriveshelf.koplugin/releases/latest/download/gdriveshelf-authorize.py) и используйте это имя вместо `tools/authorize.py`. В ZIP плагина находится только папка для установки.
 
 Утилита откроет системный браузер. Войдите на сайте Google, проверьте разрешения и подтвердите доступ. Утилита не запрашивает пароль Google. Авторизация получает токены и идентификатор аккаунта Drive, не изменяя файлы на Drive.
 
@@ -34,9 +34,11 @@ python3 tools/authorize.py \
 ## 3. Импортируйте JSON в KOReader
 
 1. Перенесите `gdriveshelf-credentials.json` в доступную KOReader папку.
-2. Откройте **GDriveShelf → Настройки** и выберите импорт JSON авторизации.
+2. Откройте **GDriveShelf**: на стартовом экране подключения нажмите **«Выбрать JSON авторизации»**. Импорт также доступен в настройках.
 3. Укажите созданный файл авторизации, а не исходный JSON OAuth-клиента.
 4. После успешного импорта удалите ненужные копии из Downloads и с устройства переноса.
+
+Папка «Загрузки» подходит; в папку плагина класть файл не нужно. На Android обычный путь — `/storage/emulated/0/Download/gdriveshelf-credentials.json`. Выбор файла начинается с домашней папки KOReader. Можно также нажать **«Ввести путь к JSON»**. Если KOReader не может прочитать файл, проверьте разрешение на доступ к памяти в настройках Android.
 
 Созданный JSON содержит конфигурацию OAuth-клиента, access и refresh token, срок действия, scope, стабильный `account_id` из Drive `user.permissionId` и адрес аккаунта для отображения. Утилита атомарно сохраняет его с правами только для владельца (`0600`) и не выводит токены. Плагин хранит собственную приватную локальную копию и сохраняет в неё обновлённые токены.
 

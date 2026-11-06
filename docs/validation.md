@@ -19,6 +19,8 @@ Coverage includes independent storage budgets and the free-space reserve, LRU ev
 
 ## Native KOReader integration
 
+`tools/auth_ui_smoke.lua` exercises first-run setup, native chooser navigation and selection, rejection of a Desktop-client JSON, private credential storage, and transition into the library. Run it from the official runtime with a dedicated disposable `KO_HOME` and `GDRIVESHELF_ROOT`. It uses synthetic credentials and forces offline mode; it never signs in or contacts Google Drive.
+
 Use an official KOReader runtime with its bundled LuaJIT and modules. Run harnesses from that runtime directory with a separate, disposable `KO_HOME`. Keep it separate from your regular reading profile.
 
 For example, after changing to the KOReader runtime directory:

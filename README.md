@@ -14,7 +14,7 @@ GDriveShelf is a KOReader plugin for browsing and reading books and comic archiv
 
 1. Download the ZIP from [Releases](../../releases).
 2. Copy `gdriveshelf.koplugin` into `koreader/plugins/`, then restart KOReader.
-3. Follow the [authorization guide](docs/authentication.md) to create a credentials JSON, then import it in **GDriveShelf → Settings**.
+3. Follow the [authorization guide](docs/authentication.md) to create a credentials JSON, then open **GDriveShelf → Choose authorization JSON**.
 4. Browse to your library folder and use its folder actions to make it your home folder.
 5. Tap a chapter to download and open it. Long-press a file or folder for offline downloads and other actions.
 
@@ -24,7 +24,14 @@ Authorization uses Python 3, your own Google OAuth **Desktop app** client, and y
 python3 tools/authorize.py --client /path/to/client.json --output /path/to/gdriveshelf-credentials.json
 ```
 
-In a release ZIP, the helper is at `gdriveshelf-tools/authorize.py`. Your Google password is entered only on Google’s website. Treat the resulting JSON as a private credential; do not upload it to an issue or commit it to Git.
+The installation ZIP contains only `gdriveshelf.koplugin/`. Download [gdriveshelf-authorize.py](https://github.com/mewforest/gdriveshelf.koplugin/releases/latest/download/gdriveshelf-authorize.py) separately from the same release and use that filename instead of `tools/authorize.py`. Your Google password is entered only on Google’s website. Treat the resulting JSON as a private credential; do not upload it to an issue or commit it to Git.
+
+<details>
+<summary>First-run setup screen</summary>
+
+First-run connection setup with direct JSON chooser, path entry and help
+
+</details>
 
 ## A familiar reading experience
 

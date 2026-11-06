@@ -1,5 +1,15 @@
 -- English source strings with a bundled Russian catalog. No global gettext mutation.
 local ru={
+ ["Connect Google Drive"]="Подключить Google Drive",
+ ["Google Drive is not connected yet."]="Google Drive пока не подключён.",
+ ["1. Run the authorization helper on your computer and sign in with Google."]="1. Запустите утилиту авторизации на компьютере и войдите в Google.",
+ ["2. Copy gdriveshelf-credentials.json to this device, for example to Downloads."]="2. Скопируйте gdriveshelf-credentials.json на читалку, например в «Загрузки».",
+ ["Choose authorization JSON"]="Выбрать JSON авторизации",
+ ["Enter JSON file path"]="Ввести путь к JSON",
+ ["Which JSON file do I need?"]="Какой JSON нужен?",
+ ["Could not read authorization JSON. Check the file path and KOReader's storage permission."]="Не удалось прочитать JSON авторизации. Проверьте путь к файлу и доступ KOReader к памяти устройства.",
+ ["This is an OAuth client JSON. Run gdriveshelf-authorize.py on your computer first, then import the resulting gdriveshelf-credentials.json."]="Это JSON OAuth-клиента. Сначала запустите gdriveshelf-authorize.py на компьютере, затем импортируйте полученный gdriveshelf-credentials.json.",
+ ["Use gdriveshelf-credentials.json created by authorize.py after signing in on your computer. The Desktop client JSON downloaded from Google Cloud is only an input to that utility.\n\nDownload gdriveshelf-authorize.py from the same GitHub release.\n\nDownloads is a suitable location on Android. The usual full path is:\n/storage/emulated/0/Download/gdriveshelf-credentials.json\n\nDo not share this file: it contains access tokens."]="Нужен gdriveshelf-credentials.json, созданный authorize.py после входа в Google на компьютере. JSON Desktop-клиента из Google Cloud используется только как входной файл утилиты.\n\nСкачайте gdriveshelf-authorize.py из того же релиза на GitHub.\n\nНа Android подойдёт папка «Загрузки». Обычный полный путь:\n/storage/emulated/0/Download/gdriveshelf-credentials.json\n\nНе передавайте этот файл другим: в нём находятся токены доступа.",
  ["B"]="Б",["KiB"]="КиБ",["MiB"]="МиБ",["GiB"]="ГиБ",["TiB"]="ТиБ",
  ["Open last document"]="Открыть последний документ",
  ["No previously opened document"]="Ранее открытых документов нет",

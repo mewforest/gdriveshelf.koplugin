@@ -151,8 +151,33 @@ function Shelf:onCoreChange(kind,entry,e)
  end
  if kind=='conflict'then message(tr("Both progress versions were preserved. Choose a version in Downloads and sync."))end
 end
-function Shelf:showLibrary()self:showFolder(self.settings.home or 'root')end
+function Shelf:hasCredentials()
+ local c=self.core and self.core.credentials or {}
+ for _,key in ipairs{'client_id','refresh_token','access_token'}do if type(c[key])~='string'or c[key]==''then return false end end
+ return true
+end
+function Shelf:showLibrary()
+ self:getCore()
+ if not self:hasCredentials()then return self:showConnectionSetup()end
+ self:showFolder(self.settings.home or 'root')
+end
 Shelf.onShowGDriveShelf=Shelf.showLibrary
+function Shelf:showConnectionSetup()
+ if self.connection_menu and not self.connection_menu._closed then ui():close(self.connection_menu)end
+ self.connection_menu=self:menu(tr("Connect Google Drive"),{
+  {icon='notice-info',text=tr("Google Drive is not connected yet."),select_enabled=false},
+  {icon='appbar.tools',text=tr("1. Run the authorization helper on your computer and sign in with Google."),select_enabled=false},
+  {icon='move.down',text=tr("2. Copy gdriveshelf-credentials.json to this device, for example to Downloads."),select_enabled=false},
+  {icon='wifi.secure.100',text=tr("Choose authorization JSON"),callback=function()self:pickCredentials()end},
+  {icon='appbar.filebrowser',text=tr("Enter JSON file path"),callback=function()self:pickCredentialsByPath()end},
+  {icon='info',text=tr("Which JSON file do I need?"),callback=function()self:showAuthorizationHelp()end},
+  {icon='appbar.settings',text=tr("Settings"),callback=function()self:showSettings()end},
+ },{icons=true,perpage=7,multiline=true})
+ return self.connection_menu
+end
+function Shelf:showAuthorizationHelp()
+ ui():show(require('ui/widget/infomessage'):new{text=tr("Use gdriveshelf-credentials.json created by authorize.py after signing in on your computer. The Desktop client JSON downloaded from Google Cloud is only an input to that utility.\n\nDownload gdriveshelf-authorize.py from the same GitHub release.\n\nDownloads is a suitable location on Android. The usual full path is:\n/storage/emulated/0/Download/gdriveshelf-credentials.json\n\nDo not share this file: it contains access tokens.")})
+end
 function Shelf:orderedEntries(entries)
  local folders,files={},{}
  for _,entry in ipairs(entries)do
@@ -186,6 +211,7 @@ function Shelf:folderRows(parent,entries,offline)
 end
 function Shelf:showFolder(parent,offline)
  local core=self:getCore();if self.folder_menu then self.folder_menu:onCloseAllMenus()end
+ if not offline and not self:hasCredentials()then return self:showConnectionSetup()end
  self.folder_id,self.folder_offline=parent,offline
  local folder=core.state.folders[parent]or{id=parent,name=parent,is_folder=true}
  local title=folder.name..(self.settings.offline and tr(" · offline") or '')
@@ -429,21 +455,39 @@ function Shelf:input(title,current,callback,input_type)
  ui():show(dialog);dialog:onShowKeyboard()
 end
 function Shelf:pickCredentials()
- local chooser
- chooser=require('ui/widget/filechooser'):new{title=tr("Select a GDriveShelf credentials JSON file"),ui=self.ui,path=self.settings.import_dir or '/',show_unsupported=false,
-  file_filter=function(name)return name:lower():match('%.json$')~=nil end,onFileSelect=function(_,item)ui():close(chooser);self:importCredentials(item.path)end}
+ local chooser;local path=self.settings.import_dir
+ if not path or path=='/'then path=require('apps/filemanager/filemanagerutil').getHomeFolder()end
+ chooser=require('ui/widget/filechooser'):new{title=tr("Select a GDriveShelf credentials JSON file"),ui=self.ui,path=path,show_unsupported=false,
+  file_filter=function(name)return name:lower():match('%.json$')~=nil end,onFileSelect=function(_,item)
+   local ok,e=self:importCredentials(item.path)
+   if ok then ui():close(chooser);self:onCredentialsImported()else problem(e)end
+  end}
  ui():show(chooser)
+ return chooser
+end
+function Shelf:pickCredentialsByPath()
+ self:input(tr("Full path to credentials JSON"),'',function(path)
+  local ok,e=self:importCredentials(path)
+  if ok then ui():nextTick(function()self:onCredentialsImported()end)end
+  return ok,e
+ end)
+end
+function Shelf:onCredentialsImported()
+ if self.connection_menu then ui():close(self.connection_menu);self.connection_menu=nil end
+ message(tr("Credentials imported"));self:showLibrary()
 end
 function Shelf:importCredentials(path)
  local credentials=self.core.storage:readJSON(path)
- if type(credentials)~='table' or type(credentials.refresh_token)~='string' or type(credentials.client_id)~='string' or type(credentials.access_token)~='string'then message(tr("Select the JSON file created by tools/authorize.py"));return end
- if credentials.scope and credentials.scope~='https://www.googleapis.com/auth/drive'then message(tr("Full Google Drive access is required"));return end
- if self.core.active_id then message(tr("Close the book before switching accounts"));return end
- if not privateJSON(shared.settings_dir..'/gdriveshelf-credentials.json',credentials)then message(tr("Could not securely save credentials"));return end
+ if type(credentials)~='table'then return false,tr("Could not read authorization JSON. Check the file path and KOReader's storage permission.")end
+ if credentials.installed or credentials.web then return false,tr("This is an OAuth client JSON. Run gdriveshelf-authorize.py on your computer first, then import the resulting gdriveshelf-credentials.json.")end
+ for _,key in ipairs{'refresh_token','client_id','access_token'}do if type(credentials[key])~='string'or credentials[key]==''then return false,tr("Select the JSON file created by tools/authorize.py")end end
+ if credentials.scope and credentials.scope~='https://www.googleapis.com/auth/drive'then return false,tr("Full Google Drive access is required")end
+ if self.core.active_id then return false,tr("Close the book before switching accounts")end
+ if not privateJSON(shared.settings_dir..'/gdriveshelf-credentials.json',credentials)then return false,tr("Could not securely save credentials")end
  if shared.core then shared.core.jobs:clear()end
  shared.core=nil
  for owner in pairs(shared.owners)do owner.core=nil end
- self.core=self:getCore();self.settings.import_dir=path:match('^(.*)/')or '/';self:saveSettings();message(tr("Credentials imported"))
+ self.core=self:getCore();self.settings.import_dir=path:match('^(.*)/')or '/';self:saveSettings();return true
 end
 function Shelf:showSettings()
  local s=self.settings
@@ -457,7 +501,7 @@ function Shelf:showSettings()
   {icon='wifi.open.0',text=mark(s.offline)..tr("Offline mode: disable network"),callback=function()self.core:setOffline(not s.offline);self:saveSettings();self:showSettings()end},
   {icon='home',text=tr("Home folder: ID or link"),callback=function()self:input(tr("Google Drive folder ID or link"),s.home,function(text)local id=text:match('/folders/([%w_-]+)')or text:match('[?&]id=([%w_-]+)')or text;if id~='root'and not id:match('^[%w_-]+$')then return false,tr("Invalid folder ID")end;s.home=id;self:saveSettings();return true end)end},
   {icon='wifi.secure.100',text=tr("Import credentials JSON"),callback=function()self:pickCredentials()end},
-  {icon='appbar.filebrowser',text=tr("Import credentials by file path"),callback=function()self:input(tr("Full path to credentials JSON"),'',function(path)self:importCredentials(path);return true end)end},
+  {icon='appbar.filebrowser',text=tr("Import credentials by file path"),callback=function()self:pickCredentialsByPath()end},
   {icon='appbar.filebrowser',text=tr("Cache folder"),callback=function()self:input(tr("Cache folder (existing cache is kept)"),s.cache_dir,function(path)
    if path:sub(1,1)~='/' or path:find('[%z\r\n]')then return false,tr("Enter an absolute path")end
    if self.core.active_id then return false,tr("Close the book first")end

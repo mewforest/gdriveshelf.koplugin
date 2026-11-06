@@ -15,9 +15,7 @@ def package(version, output=None):
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f'gdriveshelf.koplugin-{version}.zip'
     members = [(p, p.relative_to(ROOT).as_posix()) for p in sorted((ROOT / 'gdriveshelf.koplugin').rglob('*')) if p.is_file()]
-    members += [(ROOT / p, p) for p in ['README.md', 'README.ru.md', 'LICENSE', 'docs/authentication.md', 'docs/authentication.ru.md', 'docs/validation.md', 'docs/branding.md']]
-    members.append((ROOT / 'tools/authorize.py', 'gdriveshelf-tools/authorize.py'))
-    members += [(p, p.relative_to(ROOT).as_posix()) for p in sorted((ROOT / 'docs/screenshots').glob('*.png'))]
+    members.append((ROOT / 'LICENSE', 'gdriveshelf.koplugin/LICENSE'))
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as handle:
         for source, name in members:
             if source.is_symlink() or source.suffix not in {'.lua', '.pem', '.md', '.py', '.png'} and source.name != 'LICENSE':
@@ -31,13 +29,21 @@ def package(version, output=None):
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
             handle.writestr(info, data)
-        handle.writestr('PACKAGE_VERSION', version + '\n')
+        info = zipfile.ZipInfo('gdriveshelf.koplugin/PACKAGE_VERSION', (2026, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0o644 << 16
+        handle.writestr(info, version + '\n')
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     archive.with_suffix('.zip.sha256').write_text(f'{digest}  {archive.name}\n')
     with zipfile.ZipFile(archive) as handle:
         assert handle.testzip() is None
         assert 'gdriveshelf.koplugin/main.lua' in handle.namelist()
+        assert all(p.startswith('gdriveshelf.koplugin/') for p in handle.namelist())
         assert not any('/build/' in p or 'credentials' in p.lower() for p in handle.namelist())
+    helper = output / 'gdriveshelf-authorize.py'
+    helper.write_bytes((ROOT / 'tools/authorize.py').read_bytes())
+    digest = hashlib.sha256(helper.read_bytes()).hexdigest()
+    helper.with_suffix('.py.sha256').write_text(f'{digest}  {helper.name}\n')
     return archive
 
 if __name__ == '__main__':

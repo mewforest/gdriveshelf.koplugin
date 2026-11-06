@@ -14,7 +14,7 @@ GDriveShelf — плагин KOReader для просмотра и чтения 
 
 1. Скачайте ZIP из [Releases](../../releases).
 2. Скопируйте `gdriveshelf.koplugin` в `koreader/plugins/` и перезапустите KOReader.
-3. Создайте JSON авторизации по [инструкции подключения](docs/authentication.ru.md) и импортируйте его через **GDriveShelf → Настройки**.
+3. Создайте JSON авторизации по [инструкции подключения](docs/authentication.ru.md) и откройте **GDriveShelf → Выбрать JSON авторизации**.
 4. Откройте папку библиотеки и сделайте её домашней через действия текущей папки.
 5. Тап по главе скачивает и открывает её. Долгое нажатие на файл или папку открывает действия, в том числе загрузку для офлайн-чтения.
 
@@ -24,7 +24,14 @@ GDriveShelf — плагин KOReader для просмотра и чтения 
 python3 tools/authorize.py --client /path/to/client.json --output /path/to/gdriveshelf-credentials.json
 ```
 
-В ZIP релиза утилита находится в `gdriveshelf-tools/authorize.py`. Пароль вводится только на сайте Google. Полученный JSON содержит секретные данные: не прикладывайте его к обращениям и не добавляйте в Git.
+В установочном ZIP находится только `gdriveshelf.koplugin/`. Утилиту [gdriveshelf-authorize.py](https://github.com/mewforest/gdriveshelf.koplugin/releases/latest/download/gdriveshelf-authorize.py) скачайте отдельно из того же релиза и используйте это имя вместо `tools/authorize.py`. Пароль вводится только на сайте Google. Полученный JSON содержит секретные данные: не прикладывайте его к обращениям и не добавляйте в Git.
+
+<details>
+<summary>Экран первого подключения</summary>
+
+Первое подключение: выбор JSON, ввод пути и справка
+
+</details>
 
 ## Привычное чтение
 

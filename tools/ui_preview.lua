@@ -54,6 +54,9 @@ end
 local function shot(name)
  UI:forceRePaint();assert(Device.screen:shot(output..name..suffix..'.png'));print('SCREENSHOT '..name..suffix)
 end
+shelf:showLibrary();shot('connect');closeAll()
+-- Synthetic credentials only; the preview remains strictly offline.
+c.credentials={client_id='demo-client',refresh_token='demo-refresh',access_token='demo-access'}
 shelf:showFolder('demo-library');shot('titles');closeAll()
 shelf:showLibrary();shot('library');closeAll()
 shelf:showFolderActions('demo-title',true);shot('library-actions');closeAll()
