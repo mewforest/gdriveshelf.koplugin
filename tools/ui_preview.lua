@@ -60,6 +60,7 @@ c.credentials={client_id='demo-client',refresh_token='demo-refresh',access_token
 shelf:showFolder('demo-library');shot('titles');closeAll()
 shelf:showLibrary();shot('library');closeAll()
 shelf:showFolderActions('demo-title',true);shot('library-actions');closeAll()
+shelf:showFileSort();shot('file-sorting');closeAll()
 shelf:showTitleSort();shelf.preview_menu.item_table[3].callback();shot('title-sorting')
 assert(LuaSettings:open(DataStorage:getSettingsDir()..'/gdriveshelf.lua'):readSetting('title_sort')=='read','Title sorting did not persist')
 closeAll()

@@ -1,6 +1,13 @@
-local M={};local Metadata=require('gdriveshelf/metadata')
+local M={};local Metadata=require('gdriveshelf/metadata');local SDR=require('gdriveshelf/sdr')
 local extensions={cbz=true,cbr=true,cb7=true,pdf=true,epub=true,djvu=true,fb2=true,mobi=true,azw=true,azw3=true,txt=true,html=true,htm=true,rtf=true,doc=true,docx=true,zip=true}
 function M.supported(e) return not e.is_folder and not Metadata.isService(e) and extensions[(e.name or ''):lower():match('%.([^%.]+)$')] or false end
+function M.nativeComparator(collate)
+ local compare=collate.init_sort_func()
+ return function(a,b)
+  if collate.item_func then collate.item_func(a);collate.item_func(b)end
+  return compare(a,b)
+ end
+end
 -- KOReader comparator is injected by the UI; this fallback also works in standalone tests.
 local function natural(a,b)
  local x,y=a:lower(),b:lower();local i,j=1,1
@@ -48,5 +55,24 @@ function M.next(entries,id,count,mode,reverse,cmp)
 end
 function M.offlineGroups(entries)
  local r={};for _,e in pairs(entries) do if e.ready and (e.pool=='auto' or e.pool=='offline') then local p=e.parent_id;r[p]=r[p] or {};r[p][#r[p]+1]=e end end;return r
+end
+-- A matching native sidecar only says a book was opened, not how far it was read.
+function M.folderProgress(entries,summaries,pending)
+ local books,stems,sidecars={},{},{}
+ for _,e in ipairs(entries or {})do
+  local name=e.name or ''
+  if e.is_folder then sidecars[name]=true
+  else
+   local side=SDR.sidecarName(name);stems[side]=(stems[side]or 0)+1
+   if name:lower():match('%.cbz$')then books[#books+1]=e end
+  end
+ end
+ if #books==0 then return nil end
+ local started=0
+ for _,book in ipairs(books)do
+  local side=SDR.sidecarName(book.name)
+  if (summaries and summaries[book.id])or(pending and pending[book.id])or(sidecars[side]and stems[side]==1)then started=started+1 end
+ end
+ return {started=started,total=#books,ratio=started/#books}
 end
 return M

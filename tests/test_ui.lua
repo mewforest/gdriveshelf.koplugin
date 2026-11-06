@@ -13,6 +13,17 @@ test('active identity requires the exact cached file path',function()
  local p=instance({state={entries={a={id='a',path='/cache/a.cbz',ready=true,version='cached'}},docs={a={id='a',version='remote'}}}},{document={file='/cache/a.cbz'}})
  assert(p:activeEntry().id=='a' and p:activeEntry().version=='cached');p.ui.document.file='/other/a.cbz';assert(not p:activeEntry())
 end)
+test('accepting a confirmation cannot let an action exception escape',function()
+ local confirmation
+ package.loaded['ui/widget/confirmbox']={new=function(_,o)confirmation=o;return o end}
+ package.loaded['ui/widget/infomessage']={new=function(_,o)return o end}
+ local p=instance({})
+ local ok=pcall(function()
+  local dialog=p:confirmation{ok_callback=function()error('confirmation failure')end}
+  dialog.ok_callback()
+ end)
+ assert(ok and confirmation,'Confirmation exception escaped into KOReader')
+end)
 test('lazy progress only sees current visible page and redraw does not reschedule',function()
  local captured;local calls=0
  local p=instance({lazyProgress=function(_,entries)captured=entries;calls=calls+1 end})
@@ -49,11 +60,31 @@ test('active book and newer pending edits block remote application',function()
 end)
 test('end-of-book hook intercepts only this reader cache and cancellation permits another prompt',function()
  local built_in=0;local invoked=0
+ local old_settings=G_reader_settings
+ G_reader_settings={readSetting=function()return 'next_file'end,isTrue=function()return false end}
  local p=instance({state={entries={a={id='a',path='/cache/a.cbz'}},docs={}},next=function()return {id='b',name='Next'}end},
   {document={file='/cache/a.cbz'},status={onEndOfBook=function()built_in=built_in+1 end}})
- p.onEndOfBook=function()invoked=invoked+1;return true end
+ p.advanceChapter=function()invoked=invoked+1;return true end
  p:installEndHook();p.ui.status:onEndOfBook();assert(invoked==1 and built_in==0)
  p.ui.document.file='/ordinary/book.cbz';p.ui.status:onEndOfBook();assert(built_in==1)
+ G_reader_settings=old_settings
+end)
+test('native end actions are preserved and automatic next is deferred inside the current title',function()
+ assert(Plugin.onEndOfBook==nil,'Plugin must not independently consume native EndOfBook events')
+ local old_settings=G_reader_settings;local action='nothing';local deferred={};local native,marked,opened=0,0,0
+ G_reader_settings={readSetting=function()return action end,isTrue=function()return true end}
+ package.loaded['ui/uimanager'].nextTick=function(_,fn)deferred[#deferred+1]=fn end
+ local nextbook={id='b',name='2.cbz',parent_id='x'}
+ local p=instance({state={entries={a={id='a',parent_id='x',path='/cache/a.cbz'}}},next=function()return nextbook end},
+  {document={file='/cache/a.cbz'},status={onEndOfBook=function()native=native+1 end,markBook=function()marked=marked+1 end,onOpenNextOrPreviousFileInFolder=function()native=native+1 end}})
+ p.openEntry=function(_,entry)assert(entry==nextbook);opened=opened+1 end;p:installEndHook()
+ p.ui.status:onEndOfBook();assert(native==1 and opened==0)
+ action='next_file';p.ui.status:onEndOfBook();p.ui.status:onEndOfBook()
+ assert(marked>=1 and opened==0 and #deferred==1)
+ deferred[1]();assert(opened==1)
+ p._end_dialog=nil;p.ui.status:onOpenNextOrPreviousFileInFolder();assert(#deferred==2);deferred[2]();assert(opened==2)
+ p._end_dialog=nil;nextbook=nil;p.ui.status:onEndOfBook();assert(#deferred==2 and opened==2)
+ G_reader_settings=old_settings;package.loaded['ui/uimanager'].nextTick=function(_,fn)fn()end
 end)
 test('credentials chooser receives the current native UI context',function()
  local given
@@ -63,11 +94,12 @@ test('credentials chooser receives the current native UI context',function()
 end)
 test('title folders use cached covers and metadata and a separate reading sort',function()
  local core={state={summaries={},last_opened={a=10,b=20}},cached=function()end,
- titleInfo=function(_,id)if id=='a'then return {title='Actual title',author='Author',cover_path='/cache/cover.jpg',chapters={}}end;return {title=id,chapters={}}end}
+ titleInfo=function(_,id)if id=='a'then return {title='Actual title',author='Author',cover_path='/cache/cover.jpg',progress={ratio=0.5},chapters={}}end;return {title=id,chapters={}}end}
  local p=instance(core);p.settings={title_sort='read',sort='natural'}
  local rows=p:folderRows('root',{{id='a',name='Folder A',is_folder=true},{id='b',name='Folder B',is_folder=true},{id='c',name='Chapter 2.cbz'},{id='d',name='Chapter 1.cbz'}},false)
  assert(rows[2].entry.id=='b' and rows[3].entry.id=='a')
  assert(rows[3].text=='Actual title · Author' and rows[3].icon_file=='/cache/cover.jpg')
+ assert(rows[3].folder_progress==0.5 and rows[4].folder_progress==nil)
  assert(rows[4].entry.id=='d' and p.settings.sort=='natural')
 end)
 test('storage screen localizes all three cleanup rows inside its pool loop',function()
@@ -105,3 +137,11 @@ test('plain core errors use the active Russian locale',function()
  assert(shown[#shown].text=='Этот документ открыт')
 end)
 print(count..' UI adapter tests passed')
+test('file sorting is reachable in folder actions and persists independently of title sort',function()
+ package.loaded.gettext={current_lang='C'}
+ local p=instance({});p.settings={title_sort='read'}
+ local rows;p.menu=function(_,_,r)rows=r end;local saved=0;p.saveSettings=function()saved=saved+1 end
+ p:showFileSort();assert(rows[1].text:find('Natural',1,true))
+ rows[3].callback();assert(p.settings.sort=='size'and p.settings.title_sort=='read'and saved==1)
+ rows[#rows].callback();assert(p.settings.reverse and saved==2)
+end)

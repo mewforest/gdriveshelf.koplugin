@@ -211,6 +211,7 @@ function Core:removeFile(id)
 end
 function Core:titleInfo(parent)
  local entries=self:cachedList(parent);local info={title=(self.state.folders[parent]or{}).name or parent,chapters={}}
+ info.progress=Library.folderProgress(entries,self.state.summaries,self.state.sync.pending)
  for _,e in ipairs(entries)do
   if e.name=='index.json' or e.name=='series.json'then
    local c=self:cached(e.id);local data=c and self.storage:readJSON(c.path)

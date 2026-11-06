@@ -26,8 +26,40 @@ local function message(text)ui():show(require('ui/widget/infomessage'):new{text=
 local function problem(e)message(tr(type(e)=='table' and (e.message or e.code) or e or "Could not complete the action"))end
 local function stamp(e)return {id=e.id,version=e.version,checksum=e.checksum,modified_time=e.modified_time}end
 local function sameBook(a,b)return SDR.sameBook(a,b)end
+function Shelf:runAction(callback,...)
+ local args={...};local storage=self.core and self.core.storage
+ local ok,a,b=xpcall(function()return callback(unpack(args))end,function(err)
+  -- Record code locations, never the error payload: a JSON parser or third-party
+  -- module could include credentials or private filenames in its error text.
+  local lines={'GDriveShelf unexpected action error','Runtime: '..jit.os..' '..jit.arch,'Error type: '..type(err)}
+  for level=2,24 do
+   local info=debug.getinfo(level,'nSl');if not info then break end
+   local name=(info.short_src or '?'):match('([^/\\]+)$')or '?'
+   name=name:gsub('[^%w_.-]','_')
+   local func=(info.name or '?'):gsub('[^%w_.:-]','_')
+   lines[#lines+1]=name..':'..tostring(info.currentline)..' '..func
+  end
+  pcall(function()
+   local f=io.open(pluginRoot..'/PACKAGE_VERSION','rb')
+   if f then lines[#lines+1]='Version: '..(f:read(64)or ''):gsub('[^%w_.+-]','');f:close()end
+   if storage then storage:write(require('datastorage'):getDataDir()..'/gdriveshelf-diagnostic.log',table.concat(lines,'\n')..'\n')end
+  end)
+  return tr("GDriveShelf could not complete this action. KOReader is still running. See gdriveshelf-diagnostic.log in the KOReader data folder.")
+ end)
+ if not ok then pcall(problem,a);return false,a end
+ return a,b
+end
+function Shelf:confirmation(options)
+ for _,key in ipairs{'ok_callback','cancel_callback'}do
+  local callback=options[key]
+  if callback then options[key]=function(...)return self:runAction(callback,...)end end
+ end
+ return require('ui/widget/confirmbox'):new(options)
+end
 local function privateJSON(path,data)
  local ffi=require('ffi');require('ffi/posix_h')
+ -- KOReader 2026.07's POSIX declarations do not include fchmod yet.
+ ffi.cdef[[int fchmod(int, mode_t);]]
  local json=require('json');local text=json.encode(data)
  -- Start private even while the atomic replacement is being written.
  local bit=require('bit')
@@ -72,8 +104,7 @@ function Shelf:getCore()
    onchange=function(kind,entry,e)for owner in pairs(shared.owners)do owner:onCoreChange(kind,entry,e)end end}
   shared.core.oncredentials=function(c)if not privateJSON(shared.settings_dir..'/gdriveshelf-credentials.json',c)then message(tr("Could not save refreshed credentials"))end end
   local BookList=require('ui/widget/booklist')
-  local cmp=BookList.collates.natural.init_sort_func()
-  shared.core.natural=function(a,b)BookList.collates.natural.item_func(a);BookList.collates.natural.item_func(b);return cmp(a,b)end
+  shared.core.natural=Library.nativeComparator(BookList.collates.natural)
  end
  for owner in pairs(shared.owners)do owner.core=shared.core end
  self.core=shared.core;return self.core
@@ -84,7 +115,7 @@ function Shelf:init()
  self:onDispatcherRegisterActions()
  local core=self:getCore();local current=self:activeEntry()
  if current then core.active_id=current.id;core.opening_id=nil;self:installEndHook()end
- ui():nextTick(function()if not self.ui.tearing_down then core:resume();if current and self.settings.immediate then core:prefetch(current)end end end)
+ ui():nextTick(function()self:runAction(function()if not self.ui.tearing_down then core:resume();if current and self.settings.immediate then core:prefetch(current)end end end)end)
 end
 function Shelf:onDispatcherRegisterActions()
  local Dispatcher=require('dispatcher')
@@ -101,6 +132,10 @@ function Shelf:addToMainMenu(items)
   {text=tr("Downloads and sync"),callback=function()self:showQueue()end},
   {text=tr("Settings"),callback=function()self:showSettings()end},
  }}
+ for _,row in ipairs(items.gdriveshelf.sub_item_table)do
+  local callback=row.callback
+  if callback then row.callback=function(...)return self:runAction(callback,...)end end
+ end
 end
 function Shelf:menu(title,rows,options)
  options=options or {};local Menu=require('ui/widget/menu');local Device=require('device');local menu
@@ -112,15 +147,20 @@ function Shelf:menu(title,rows,options)
    local row=index and m.item_table[index]
    if not row or not (row.icon or row.icon_file)then return Menu.getItemShortCutIcon(m,dimen,key,style)end
    local size=math.floor(math.min(dimen.w,dimen.h)*0.75)
-   return require('ui/widget/container/centercontainer'):new{dimen=dimen,
-    require('ui/widget/iconwidget'):new{file=row.icon_file,icon=row.icon,width=size,height=size,alpha=true,is_icon=not row.cover,scale_factor=row.cover and 0 or nil}}
+   local picture=require('ui/widget/iconwidget'):new{file=row.icon_file,icon=row.icon,width=size,height=size,alpha=true,is_icon=not row.cover,scale_factor=row.cover and 0 or nil}
+   if row.folder_progress~=nil then
+    picture=require('ui/widget/verticalgroup'):new{align='center',picture,
+     require('ui/widget/verticalspan'):new{width=math.max(1,math.floor(dimen.h*0.02))},
+     require('ui/widget/progresswidget'):new{width=size,height=math.max(3,math.floor(dimen.h*0.07)),percentage=row.folder_progress,radius=0,margin_h=0,margin_v=0}}
+   end
+   return require('ui/widget/container/centercontainer'):new{dimen=dimen,picture}
   end}
  end
  menu=MenuClass:new{title=title,item_table=rows,width=Device.screen:getWidth(),height=Device.screen:getHeight(),
   is_borderless=true,is_popout=false,items_per_page=options.perpage,multilines_forced=options.multiline,
   close_callback=function()menu._closed=true;if self.folder_menu==menu then self.folder_menu=nil end;if options.close then options.close()end end}
- menu.onMenuSelect=function(_,item)if item.callback and item.select_enabled~=false then item.callback()end;return true end
- menu.onMenuHold=function(_,item)if item.hold_callback then item.hold_callback()end;return true end
+ menu.onMenuSelect=function(_,item)if item.callback and item.select_enabled~=false then self:runAction(item.callback)end;return true end
+ menu.onMenuHold=function(_,item)if item.hold_callback then self:runAction(item.hold_callback)end;return true end
  if options.lazy then
   local original=menu.onGotoPage
   menu.onGotoPage=function(m,page)local result=original(m,page);m._lazy_page=nil;self:visibleProgress(m);return result end
@@ -184,7 +224,7 @@ function Shelf:orderedEntries(entries)
   if entry.is_folder then
    local e={};for k,v in pairs(entry)do e[k]=v end
    local info=self.core:titleInfo(e.id)
-   e.name=info.title or e.name;e.author=info.author;e.cover_path=info.cover_path
+   e.name=info.title or e.name;e.author=info.author;e.cover_path=info.cover_path;e.folder_progress=info.progress and info.progress.ratio
    e.last_read=(self.core.state.last_opened or {})[e.id]or 0
    folders[#folders+1]=e
   else files[#files+1]=entry end
@@ -203,6 +243,7 @@ function Shelf:folderRows(parent,entries,offline)
   local name=info.chapters[e.name] or e.name
   rows[#rows+1]={text=e.is_folder and (e.name..(e.author and e.author~=''and ' · '..e.author or '')) or (pin..name..progress),entry=e,
    icon=e.is_folder and 'appbar.filebrowser' or 'appbar.pageview',icon_file=e.is_folder and e.cover_path or nil,cover=e.is_folder and e.cover_path~=nil,
+   folder_progress=e.is_folder and e.folder_progress or nil,
    callback=function()if e.is_folder then self:showFolder(e.id,offline)elseif Library.supported(e)then self:openEntry(e)else self:fileActions(e)end end,
    hold_callback=function()if e.is_folder then self:folderActions(e)else self:fileActions(e)end end}
  end
@@ -235,6 +276,7 @@ function Shelf:showFolderActions(parent,offline)
   {icon='appbar.filebrowser',text=tr("Folder actions"),callback=function()self:folderActions(folder)end},
   {icon='info',text=tr("Series information"),callback=function()self:showInfo(parent)end},
   {icon='appbar.navigation',text=tr("Title sorting"),callback=function()self:showTitleSort()end},
+  {icon='move.down',text=tr("File sorting"),callback=function()self:showFileSort()end},
   {icon='bookmark',text=tr("Available offline"),callback=function()self:showOffline()end},
   {icon='move.down',text=tr("Downloads and conflicts"),callback=function()self:showQueue()end},
   {icon='column.three',text=tr("Storage and cache"),callback=function()self:showMemory()end},
@@ -247,7 +289,7 @@ function Shelf:folderActions(folder)
   {text=tr("Download folder and subfolders"),callback=function()
    self.core:scanFolder(folder,function(result,e)
     if not result then problem(e);return end
-    ui():show(require('ui/widget/confirmbox'):new{text=F("Download %d files (%s)?\nPinned downloads are never removed automatically.",#result.files,bytes(result.size)),ok_text=tr("Download"),ok_callback=function()for _,entry in ipairs(result.files)do self.core:download(entry,'offline')end;self:showQueue()end})
+    ui():show(self:confirmation{text=F("Download %d files (%s)?\nPinned downloads are never removed automatically.",#result.files,bytes(result.size)),ok_text=tr("Download"),ok_callback=function()for _,entry in ipairs(result.files)do self.core:download(entry,'offline')end;self:showQueue()end})
    end)
   end},
   {text=tr("Remove downloads from this folder and subfolders"),callback=function()self:removeTree(folder.id)end},
@@ -272,7 +314,7 @@ end
 function Shelf:showOffline()
  local rows={}
  for _,folder in ipairs(self:orderedEntries(self:offlineChildren(nil)))do
-  local e=folder;rows[#rows+1]={text=e.name..(e.author and e.author~=''and ' · '..e.author or ''),icon='appbar.filebrowser',icon_file=e.cover_path,cover=e.cover_path~=nil,callback=function()self:showFolder(e.id,true)end}
+  local e=folder;rows[#rows+1]={text=e.name..(e.author and e.author~=''and ' · '..e.author or ''),icon='appbar.filebrowser',icon_file=e.cover_path,cover=e.cover_path~=nil,folder_progress=e.folder_progress,callback=function()self:showFolder(e.id,true)end}
  end
  if #rows==0 then rows={{text=tr("No downloaded files"),select_enabled=false}}end
  self:menu(tr("Available offline — folders"),rows,{icons=true,perpage=8,multiline=true})
@@ -290,6 +332,19 @@ function Shelf:showTitleSort()
  rows[#rows+1]={text=(self.settings.title_reverse and '✓ 'or '○ ')..tr("Reverse order"),callback=function()self.settings.title_reverse=not self.settings.title_reverse;refresh();self:showTitleSort()end}
  self:menu(tr("Title sorting"),rows)
 end
+function Shelf:showFileSort()
+ local labels={natural=tr("Natural name order"),name=tr("Name"),size=tr("Size"),date=tr("Modified date")}
+ local function refresh()
+  self:saveSettings()
+  if self.folder_menu and not self.folder_menu._closed then self:replaceMenu(self.folder_menu,self:folderRows(self.folder_id,self.folder_entries or {},self.folder_offline))end
+ end
+ local rows={}
+ for _,mode in ipairs{'natural','name','size','date'}do
+  local m=mode;rows[#rows+1]={text=((self.settings.sort or 'natural')==m and '✓ 'or '')..labels[m],callback=function()self.settings.sort=m;refresh();self:showFileSort()end}
+ end
+ rows[#rows+1]={text=(self.settings.reverse and '✓ 'or '○ ')..tr("Reverse order"),callback=function()self.settings.reverse=not self.settings.reverse;refresh();self:showFileSort()end}
+ self:menu(tr("File sorting"),rows)
+end
 function Shelf:removeTree(parent)
  local ids,total={},0
  for id,e in pairs(self.core.state.entries)do
@@ -298,7 +353,7 @@ function Shelf:removeTree(parent)
    while p and not seen[p]do if p==parent then ids[#ids+1]=id;total=total+(e.size or 0);break end;seen[p]=true;local f=self.core.state.folders[p];p=f and f.parent_id end
   end
  end
- ui():show(require('ui/widget/confirmbox'):new{text=F("Remove %d local downloads (%s)?\nReading progress and pending sync will be kept.",#ids,bytes(total)),ok_text=tr("Remove"),ok_callback=function()for _,id in ipairs(ids)do self.core:removeFile(id)end;self:onCoreChange('cleared')end})
+ ui():show(self:confirmation{text=F("Remove %d local downloads (%s)?\nReading progress and pending sync will be kept.",#ids,bytes(total)),ok_text=tr("Remove"),ok_callback=function()for _,id in ipairs(ids)do self.core:removeFile(id)end;self:onCoreChange('cleared')end})
 end
 function Shelf:activeEntry()
  local path=self.ui and self.ui.document and self.ui.document.file
@@ -334,6 +389,7 @@ function Shelf:openLastDocument()
 end
 function Shelf:openEntry(entry,resume)
  self.core:open(entry,function(path,e)
+  self._end_dialog=nil
   if not path then problem(e);return end
   local DocSettings=require('docsettings')
   if not DocSettings:hasSidecarFile(path) and not self.core.state.sync.pending[entry.id]then
@@ -353,12 +409,12 @@ function Shelf:fileActions(entry)
   {text=tr("Open"),callback=function()self:openEntry(entry)end},
   {text=tr("Download and keep offline"),callback=function()self.core:download(entry,'offline');message(tr("File added to the download queue"))end},
   {text=tr("Remove local download"),callback=function()
-   ui():show(require('ui/widget/confirmbox'):new{text=tr("Remove the local file? Reading progress will be kept."),ok_text=tr("Remove"),ok_callback=function()local ok,e=self.core:removeFile(entry.id);if not ok then problem(e)end end})
+   ui():show(self:confirmation{text=tr("Remove the local file? Reading progress will be kept."),ok_text=tr("Remove"),ok_callback=function()local ok,e=self.core:removeFile(entry.id);if not ok then problem(e)end end})
   end},
   {text=tr("Apply cached cloud progress"),callback=function()
    if not cached then message(tr("Download the book first"));return end
    local remote=self.core:remote(entry)
-   ui():show(require('ui/widget/confirmbox'):new{text=tr("Apply the cached cloud progress? Close the book first."),ok_text=tr("Apply"),ok_callback=function()local ok,e=self:applyRemote(entry,remote,cached.path);if not ok then problem(e)else message(tr("Progress applied. Open the book to continue."))end end})
+   ui():show(self:confirmation{text=tr("Apply the cached cloud progress? Close the book first."),ok_text=tr("Apply"),ok_callback=function()local ok,e=self:applyRemote(entry,remote,cached.path);if not ok then problem(e)else message(tr("Progress applied. Open the book to continue."))end end})
   end},
   {text=tr("Restore a local snapshot"),callback=function()self:restoreSnapshot(entry)end},
   {text=tr("Series information"),callback=function()self:showInfo(entry.parent_id)end},
@@ -384,7 +440,7 @@ function Shelf:showMemory()
  for _,pool in ipairs{'auto','offline','meta'}do
   local p=pool;local label=({auto=tr("Automatic reading cache"),offline=tr("Pinned downloads"),meta=tr("Covers, listings and metadata")})[p]
   rows[#rows+1]={text=label..': '..bytes(usage[p])..tr(" · clear"),callback=function()
-   ui():show(require('ui/widget/confirmbox'):new{text=F("Clear “%s” (%s)?\nOpen files, reading progress and pending sync will be kept.",label,bytes(usage[p])),ok_text=tr("Clear"),ok_callback=function()self.core:clearPool(p);self:showMemory()end})
+   ui():show(self:confirmation{text=F("Clear “%s” (%s)?\nOpen files, reading progress and pending sync will be kept.",label,bytes(usage[p])),ok_text=tr("Clear"),ok_callback=function()self.core:clearPool(p);self:showMemory()end})
   end}
  end
  rows[#rows+1]={text=F("Cache location: %s",storage.root),select_enabled=false}
@@ -411,13 +467,13 @@ function Shelf:showConflict(entry)
   {text=tr("View local version"),callback=function()inspect(saved.local_lua,tr("Local progress"))end},
   {text=tr("View cloud version"),callback=function()inspect(saved.remote_lua,tr("Cloud progress"))end},
   {text=tr("Use local version"),callback=function()
-   ui():show(require('ui/widget/confirmbox'):new{text=tr("Upload local progress? The cloud version has been preserved and will be checked again."),ok_text=tr("Local"),ok_callback=function()
+   ui():show(self:confirmation{text=tr("Upload local progress? The cloud version has been preserved and will be checked again."),ok_text=tr("Local"),ok_callback=function()
     local archived=self:archiveConflict(entry,saved);if not archived then message(tr("Could not preserve both conflict versions"));return end;local result,e=self.core:sync():resolve(entry.id,'local');if not result then problem(e);return end;self.core:save();self.core:flushPending();message(tr("Local version queued for sync"))
    end})
   end},
   {text=tr("Use cloud version"),callback=function()
    local cached=self.core:cached(entry.id);if not cached then message(tr("Download the book first"));return end
-   ui():show(require('ui/widget/confirmbox'):new{text=tr("Restore cloud progress locally? Close the book before applying it."),ok_text=tr("Cloud"),ok_callback=function()
+   ui():show(self:confirmation{text=tr("Restore cloud progress locally? Close the book before applying it."),ok_text=tr("Cloud"),ok_callback=function()
     if not self:archiveConflict(entry,saved)then message(tr("Could not preserve both conflict versions"));return end
     local ok,e=self:applyRemote(entry,{lua=saved.remote_lua,stamp=saved.stamp,book_stamp=saved.book_stamp},cached.path,true)
     if not ok then problem(e);return end
@@ -441,7 +497,7 @@ function Shelf:restoreSnapshot(entry)
  local record=self.core.storage:readJSON(self.core.storage.root..'/snapshots/'..Storage.key(entry.id)..'.json')
  local cached=self.core:cached(entry.id)
  if not record or not cached then message(tr("No local snapshot or downloaded book"));return end
- ui():show(require('ui/widget/confirmbox'):new{text=tr("Restore the local progress snapshot? Close the book first."),ok_text=tr("Restore"),ok_callback=function()
+ ui():show(self:confirmation{text=tr("Restore the local progress snapshot? Close the book first."),ok_text=tr("Restore"),ok_callback=function()
   local ok,e=self:applyRemote(entry,record,cached.path,true);if not ok then problem(e);return end
   local data=SDR.decode(record.lua);data.doc_path=cached.path;self.core:snapshot(entry,data);message(tr("Local snapshot restored"))
  end})
@@ -450,7 +506,7 @@ function Shelf:input(title,current,callback,input_type)
  local dialog
  dialog=require('ui/widget/inputdialog'):new{title=title,input=tostring(current or ''),input_type=input_type,buttons={{
   {text=tr("Cancel"),callback=function()ui():close(dialog)end},
-  {text=tr("Save"),is_enter_default=true,callback=function()local text=dialog:getInputText();local ok,e=callback(text);if ok~=false then ui():close(dialog)else problem(e)end end},
+  {text=tr("Save"),is_enter_default=true,callback=function()self:runAction(function()local text=dialog:getInputText();local ok,e=callback(text);if ok~=false then ui():close(dialog)else problem(e)end end)end},
  }}}
  ui():show(dialog);dialog:onShowKeyboard()
 end
@@ -459,8 +515,10 @@ function Shelf:pickCredentials()
  if not path or path=='/'then path=require('apps/filemanager/filemanagerutil').getHomeFolder()end
  chooser=require('ui/widget/filechooser'):new{title=tr("Select a GDriveShelf credentials JSON file"),ui=self.ui,path=path,show_unsupported=false,
   file_filter=function(name)return name:lower():match('%.json$')~=nil end,onFileSelect=function(_,item)
-   local ok,e=self:importCredentials(item.path)
-   if ok then ui():close(chooser);self:onCredentialsImported()else problem(e)end
+   self:runAction(function()
+    local ok,e=self:importCredentials(item.path)
+    if ok then ui():close(chooser);self:onCredentialsImported()else problem(e)end
+   end)
   end}
  ui():show(chooser)
  return chooser
@@ -468,7 +526,7 @@ end
 function Shelf:pickCredentialsByPath()
  self:input(tr("Full path to credentials JSON"),'',function(path)
   local ok,e=self:importCredentials(path)
-  if ok then ui():nextTick(function()self:onCredentialsImported()end)end
+  if ok then ui():nextTick(function()self:runAction(function()self:onCredentialsImported()end)end)end
   return ok,e
  end)
 end
@@ -516,7 +574,7 @@ function Shelf:showSettings()
   {icon='cre.render.reload',text=mark(s.sync_enabled)..tr("Sync KOReader reading progress"),callback=function()toggle('sync_enabled');if s.sync_enabled then self.core:flushPending()end;self:showSettings()end},
   {icon='appbar.filebrowser',text=mark(s.show_service)..tr("Show service files"),callback=function()toggle('show_service');self:showSettings()end},
   {icon='appbar.navigation',text=F("Sort order: %s",sort_labels[s.sort or 'natural']or sort_labels.natural),callback=function()
-   local rows={};for _,mode in ipairs{'natural','name','size','date'}do local m=mode;rows[#rows+1]={text=sort_labels[m],callback=function()s.sort=m;self:saveSettings()end}end;self:menu(tr("Sort order"),rows)
+   self:showFileSort()
   end},
   {icon='move.down',text=mark(s.reverse)..tr("Reverse order"),callback=function()toggle('reverse');self:showSettings()end},
   {icon='bookmark',text=tr("Save a snapshot of the current book"),callback=function()self:snapshotCurrent();message(tr("Snapshot saved for the current GDriveShelf book"))end},
@@ -534,7 +592,7 @@ function Shelf:showAbout()
 end
 function Shelf:onSaveSettings()
  local doc=self.ui.doc_settings
- ui():nextTick(function()if doc and self.ui.doc_settings==doc then self:snapshotCurrent()end end)
+ ui():nextTick(function()self:runAction(function()if doc and self.ui.doc_settings==doc then self:snapshotCurrent()end end)end)
  self:saveSettings()
 end
 function Shelf:onFlushSettings()self:onSaveSettings()end
@@ -553,30 +611,43 @@ end
 function Shelf:installEndHook()
  local status=self.ui.status;if not status or self._native_end then return end
  self._native_end=status.onEndOfBook
+ self._native_next=status.onOpenNextOrPreviousFileInFolder
+ status.onOpenNextOrPreviousFileInFolder=function(owner,previous,...)
+  if self:activeEntry()and not previous then return self:runAction(function()return self:onGDriveShelfNext()end)end
+  if self._native_next then return self._native_next(owner,previous,...)end
+ end
  status.onEndOfBook=function(owner,...)
-  if self:activeEntry()then self:onEndOfBook();return true end
+  if self:activeEntry()then
+   local action=G_reader_settings:readSetting('end_document_action')or 'pop-up'
+   if action=='next_file'then
+    return self:runAction(function()
+     if G_reader_settings:isTrue('end_document_auto_mark')then owner:markBook(true)end
+     return self:advanceChapter()
+    end)
+   end
+   return self:runAction(self._native_end,owner,...)
+  end
   return self._native_end(owner,...)
  end
 end
-function Shelf:onEndOfBook()
- local entry=self:activeEntry();if not entry or self._end_dialog then return end
+function Shelf:advanceChapter()
+ local entry=self:activeEntry();if not entry then return false end
+ if self._end_dialog then return true end
  local next_entry=self.core:next(entry)
+ if not next_entry then message(tr("You have finished the last chapter in this folder."));return true end
  self._end_dialog=true
  ui():nextTick(function()
-  if not self:activeEntry()then self._end_dialog=nil;return end
-  if not next_entry then
-   ui():show(require('ui/widget/confirmbox'):new{text=tr("You have finished the last chapter in this folder."),ok_text=tr("Close"),ok_callback=function()self._end_dialog=nil end,cancel_callback=function()self._end_dialog=nil end})
-   return
-  end
-  ui():show(require('ui/widget/confirmbox'):new{text=tr("Open the next chapter?\n")..next_entry.name,ok_text=tr("Open"),
-   ok_callback=function()self._end_dialog=nil;self:openEntry(next_entry)end,cancel_callback=function()self._end_dialog=nil end})
+  local ok=self:runAction(function()
+   local current=self:activeEntry()
+   if not current or current.id~=entry.id then self._end_dialog=nil;return end
+   self:openEntry(next_entry)
+  end)
+  if ok==false then self._end_dialog=nil end
  end)
  return true
 end
 function Shelf:onGDriveShelfNext()
- local entry=self:activeEntry();local next_entry=entry and self.core:next(entry)
- if next_entry then self:openEntry(next_entry)else message(tr("No next chapter in this folder"))end
- return true
+ return self:advanceChapter()
 end
 function Shelf:onNetworkConnected()if self.core and not self.settings.offline then self.core.retry_after=nil;self.core:resume()end end
 function Shelf:onSuspend()if self.core then self.core.sleeping=true;self.core.jobs:setOffline(true)end end

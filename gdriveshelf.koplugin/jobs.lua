@@ -24,13 +24,26 @@ function Jobs:enqueue(key,task,callback,front,before)
  if front then table.insert(self.queue,1,job) else self.queue[#self.queue+1]=job end
  self:pump();return true
 end
+function Jobs:notify(job,value,err)
+ if job.callback then
+  local ok=pcall(job.callback,value,err)
+  if not ok then
+   -- Callback payloads may include private network data; do not log the error.
+   local good,logger=pcall(require,'logger');if good then logger.warn('GDriveShelf background callback failed')end
+  end
+ end
+end
 function Jobs:pump()
  if self.offline or self.active or #self.queue==0 then return end
  local j=table.remove(self.queue,1);self.seq=self.seq+1;j.result_path=self.dir..'/result-'..self.nonce..'-'..self.seq..'.json'
  self.storage:remove(j.result_path)
- if j.before then local good,why=j.before();if not good then self.keys[j.key]=nil;if j.callback then j.callback(nil,why) end;return self:pump() end end
+ if j.before then
+  local ran,good,why=pcall(j.before)
+  if not ran then good=false;why={code='prepare',message='Background preparation failed'}end
+  if not good then self.keys[j.key]=nil;self:notify(j,nil,why);return self:pump()end
+ end
  local ok,pid=pcall(self.backend.start,j.task,j.result_path)
- if not ok or not pid then self.keys[j.key]=nil;if j.callback then j.callback(nil,{code='spawn',message='Cannot start background process'}) end;return self:pump() end
+ if not ok or not pid then self.keys[j.key]=nil;self:notify(j,nil,{code='spawn',message='Cannot start background process'});return self:pump() end
  j.pid=pid;self.active=j;self.schedule(self.tick,0.25)
 end
 function Jobs:poll()
@@ -38,7 +51,7 @@ function Jobs:poll()
  if not self.backend.done(j.pid) then self.schedule(self.tick,0.25);return end
  self.active=nil;self.keys[j.key]=nil
  local r=self.storage:readJSON(j.result_path,64*1048576);self.storage:remove(j.result_path)
- if j.callback then local ok,e=pcall(j.callback,r and r.value,r and r.error or (not r and {code='worker',message='Background process exited without a result'}));if not ok then local good,logger=pcall(require,'logger');if good then logger.warn('GDriveShelf callback failed',tostring(e)) end end end
+ self:notify(j,r and r.value,r and r.error or (not r and {code='worker',message='Background process exited without a result'}))
  self:pump()
 end
 function Jobs:cancel(key)
@@ -48,8 +61,8 @@ function Jobs:cancel(key)
   -- terminateSubProcess sends SIGKILL; waitpid must still collect the child.
   local function reap() if not self.backend.done(j.pid) then self.schedule(reap,1) else self.storage:remove(j.result_path) end end
   reap()
-  if j.callback then j.callback(nil,{code='cancelled',message='Cancelled'}) end
- else for i=#self.queue,1,-1 do if self.queue[i].key==key then local j=table.remove(self.queue,i);self.keys[key]=nil;if j.callback then j.callback(nil,{code='cancelled',message='Cancelled'}) end end end end
+  self:notify(j,nil,{code='cancelled',message='Cancelled'})
+ else for i=#self.queue,1,-1 do if self.queue[i].key==key then local j=table.remove(self.queue,i);self.keys[key]=nil;self:notify(j,nil,{code='cancelled',message='Cancelled'})end end end
  self:pump()
 end
 function Jobs:setOffline(value)

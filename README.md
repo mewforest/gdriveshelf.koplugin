@@ -1,7 +1,7 @@
 [Русская версия](README.ru.md)
 
 <p align="center">
-  <img src="gdriveshelf.koplugin/resources/logo.png" width="96" alt="GDriveShelf logo">
+  <img src="docs/logo-readme.svg" width="96" alt="GDriveShelf logo">
 </p>
 <h1 align="center">GDriveShelf</h1>
 <p align="center"><strong>Your Google Drive library, inside KOReader.</strong><br>Download whole chapters, read with KOReader’s native controls, and keep your library available offline.</p>
@@ -47,6 +47,7 @@ First-run connection setup with direct JSON chooser, path entry and help
 
 - Browse Drive folders with natural chapter sorting and a configurable home folder.
 - Browse title folders with cached covers, series names, and authors. Sort titles separately by name, last opened, or date added; both sort settings persist across restarts.
+- See a rough opened-chapter bar beneath title covers, inferred from cached CBZ/sidecar names and known local progress, without reading remote sidecars. Unlisted folders and folders without CBZ files have no bar.
 - Resume the last document from **Library and actions**, with native reading progress and next-chapter prefetch when online.
 - Read downloaded files offline and pin individual files or whole folders for later.
 - Prefetch the next chapters within the current title’s folder.
@@ -75,6 +76,8 @@ flowchart LR
 | Pinned offline files and folders | No separate limit | Manual |
 | Covers, listings, and remote metadata | 256 MiB | Least recently used files, automatically |
 
+Allow enough automatic-cache space for both the open archive and the next chapter to prefetch.
+
 GDriveShelf reserves **512 MiB of free space** on the storage volume and protects the open book. Removing cached archives preserves local `.sdr` data, progress snapshots, and pending sync.
 
 Before travelling, download the folders you need and enable **Offline: block network** in Settings. Cached chapters open without a server request. When you go online again, pending progress can sync even for books you have already closed. KOReader must remain running for downloads and background work.
@@ -83,11 +86,13 @@ Before travelling, download the folders you need and enable **Offline: block net
 
 **Title sorting** is available in **Library and actions** and **Settings**. Last-opened order tracks books opened through GDriveShelf on this device. Date-added order uses the folder's Drive creation date, falling back to the first time GDriveShelf saw it. Covers and series names appear once the folder metadata has been cached; opening a parent list does not scan every child folder.
 
+**File sorting**, in the same folder actions, controls chapters independently: natural order (the default), name, size, or modified date, with an optional reverse order. It is saved across restarts; next-chapter selection follows that order. KOReader’s **End of document action** is respected: **Open next file** advances automatically within the current Drive folder; **Ask** retains the native popup. The native auto-mark-finished option is also preserved.
+
 Cloud progress does not unexpectedly move an open book to another page. You can explicitly apply saved cloud progress and resolve conflicts from **Queue and sync**.
 
 A folder such as `Book.sdr/metadata.cbz.lua` is native KOReader data. Another KOReader installation can use it when the book and its `.sdr` folder are available as ordinary local files. The plugin handles access to Drive; cloud sidecars alone do not give KOReader direct Drive access. Duplicate names and changed book versions may need a manual decision.
 
-GDriveShelf targets the **KOReader 2026.07 API**. Integration has been tested in the official macOS ARM64 build; validation on physical Android readers remains important. See the [validation guide](docs/validation.md) for coverage and reproducible checks.
+GDriveShelf targets the **KOReader 2026.07 API**. Integration has been tested in official macOS ARM64 and Android ARM64 builds, including an Android 11 emulator; validation on physical E-Ink readers remains important. See the [validation guide](docs/validation.md) for coverage and reproducible checks.
 
 Google Docs, Sheets, and Slides are not exported. There is no dedicated shared-drive selector or standalone Android download service. Service files are hidden by default, and links or remote images inside metadata are not opened automatically. HTTPS certificate verification is enabled; a Mozilla CA bundle is included.
 

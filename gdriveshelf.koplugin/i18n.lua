@@ -1,5 +1,8 @@
 -- English source strings with a bundled Russian catalog. No global gettext mutation.
 local ru={
+ ["Background preparation failed"]="Ошибка подготовки фонового задания",
+ ["File sorting"]="Сортировка файлов",
+ ["GDriveShelf could not complete this action. KOReader is still running. See gdriveshelf-diagnostic.log in the KOReader data folder."]="Не удалось выполнить действие GDriveShelf. KOReader продолжает работать. Журнал gdriveshelf-diagnostic.log находится в папке данных KOReader.",
  ["Connect Google Drive"]="Подключить Google Drive",
  ["Google Drive is not connected yet."]="Google Drive пока не подключён.",
  ["1. Run the authorization helper on your computer and sign in with Google."]="1. Запустите утилиту авторизации на компьютере и войдите в Google.",

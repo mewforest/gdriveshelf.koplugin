@@ -4,6 +4,12 @@
 
 The bold triangular ribbon recalls Drive's geometry; the transparent open book and shelf-like base identify the plugin's reading-library purpose. It is an independent GDriveShelf mark, not the official Google Drive logo. Use it on a light background, preserve its square canvas and clear padding, and scale proportionally. The source is 1254 × 1254 pixels (245,674 bytes); UI code should constrain its displayed dimensions. Visually checked on white at large size and at 128, 64, and 32 pixels.
 
+## README presentation
+
+`docs/logo-readme.svg` is a self-contained presentation wrapper: a pure white rectangle behind an embedded, byte-for-byte copy of the original PNG. The artwork, 1254 × 1254 canvas, placement, and padding remain exact. The white background makes the black mark visible in both light and dark README themes. This wrapper is code-native presentation markup, not a redrawn logo or a new generated mark; keep the transparent PNG for the KOReader UI.
+
+Verified in Chromium on white and dark backgrounds. The rendered wrapper is fully opaque (all alpha values are 255), with pure white corner pixels. The embedded PNG matches the original SHA-256 `f9ed432178e7d5cf8788825319b82311336e071e3c4ee966af5ea51655d79de5`. The wrapper is 327,877 bytes; its embedded raster avoids external image dependencies.
+
 ## Generation prompt
 
 ```text

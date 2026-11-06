@@ -2,7 +2,7 @@
 
 # Validation guide
 
-GDriveShelf targets the **KOReader 2026.07 API**. Native integration and visual checks have been run on the official **macOS ARM64 KOReader `v2026.07.2-310-gd183b7f`** build. Baseline validation was performed on 6 November 2026. Physical Android reader validation remains outstanding; desktop results do not establish firmware compatibility.
+GDriveShelf targets the **KOReader 2026.07 API**. Native checks have run on official **macOS ARM64 KOReader `v2026.07.2-310-gd183b7f`** and **Android ARM64 KOReader `v2026.07`** in an Android 11 / API 30 AOSP emulator. Validation was performed on 6 November 2026. The emulator does not validate physical E-Ink rendering or vendor firmware APIs.
 
 ## Automated checks
 
@@ -69,6 +69,30 @@ This creates a new test child under the supplied parent, uploads the fixture, cr
 Live checks have confirmed these flows against Drive, including HTTP 412 for a stale conditional update. The provider uses Drive v2 for the ETag snapshot and conditional update where needed; listing, creation, and downloads use v3. Binary content identity uses equal MD5 values even when Drive changes a service version number.
 
 ## Android device checklist
+
+### Reproducible emulator import regression
+
+`tools/android_import_smoke.lua` is a temporary KOReader userpatch for an isolated test emulator. It exercises the real native JSON chooser, import, and library transition. It also runs a real subprocess with IPC while checking the UI timer; an optional local CBZ checks page navigation and native `.sdr` saving. It does not use real Drive credentials or make Drive requests.
+
+Prepare the emulator with the plugin installed, synthetic `gdriveshelf-credentials.json` in `/sdcard/Download/`, and plugin settings `offline=true, sync_enabled=false`. Copy the harness to `/sdcard/koreader/patches/2-gdriveshelf-import-test.lua`, then restart KOReader. For the optional reader check, supply a valid multi-page archive at `/sdcard/Download/GDriveShelf-smoke.cbz`. Capture `adb logcat` before launch and look for the three `GDriveShelf Android smoke: PASS` messages. Remove the temporary patch afterwards so normal launches do not run the test again.
+
+This reproduced the pre-fix import failure, `missing declaration for symbol 'fchmod'`, on official Android v2026.07. The plugin now declares the function explicitly after loading the platform's `mode_t`; newer KOReader versions also accept that declaration. On the emulator the imported credential file had `0600` permissions.
+
+### Expanded live Drive and failure checks
+
+The [sanitized Android result](test-results/android-api30.json) records 28 passed checks on the same Android build. These cover independent metadata caching, checksum-verified downloads, native reading, threshold prefetch, auto-cache LRU with preserved sidecars/pending progress, pinned recursive downloads, parent-folder boundaries, cleanup of all pools, and the 512 MiB free-space reserve.
+
+The emulator's Wi-Fi and mobile-data radios were disabled for the offline checks. Cached opening returned without a network job; pending progress survived on disk. Restoring connectivity sent native progress for a book whose archive had already been evicted. Follow-up checks exercised existing `.sdr` updates, HTTP 412 stale-write rejection, both-side conflict preservation/resolution, and rejection of executable Lua metadata without executing it. Wrong OAuth credentials, injected menu/confirmation errors, and worker preparation/cancellation errors left KOReader running. The file-sort menu and persisted selection were also checked on Android.
+
+`tools/android_drive_setup.lua` prepares only a new child of the explicitly supplied `GDRIVESHELF_TEST_PARENT`; use `GDRIVESHELF_EXTEND=1` for its nested-title fixture. The private output plan and import JSON are consumed by `tools/android_drive_smoke.lua` as a temporary startup patch. That patch pauses at the network-off/on checkpoints; use adb to change the radios and create the corresponding `settings/gdriveshelf-avd-network-off.flag` / `network-on.flag` files. Replace it with `tools/android_sync_fault_smoke.lua` for the conflict and fault checks. Never run these live harnesses against a normal library account state or without an explicitly authorized test parent.
+
+After validation the temporary Drive subtree was moved to trash, startup patches were removed, and real OAuth files were removed from the reusable emulator. Original manga files and original reading progress were not changed. The setup helper's `GDRIVESHELF_CLEANUP=1` mode checks the recorded parent before trashing its test child.
+
+Two Android-2026.07 compatibility failures found by these runs are covered: the missing POSIX declaration and the absent natural-sort preparation hook. Unexpected UI errors now write code locations to `gdriveshelf-diagnostic.log` in KOReader's data folder; error payloads, credentials, and JSON contents are excluded.
+
+`tools/android_end_action_smoke.lua` adds a fresh-fixture run through real paged-reader EOF events. Native **Nothing**, **Ask**, **Open next file**, and auto-mark-finished behavior were checked, including cached and uncached next chapters, the final chapter boundary, and restarting with `start_with=last` at page 2. A cache budget too small for both protected/open and next archives was rejected safely; increase the budget or pin files when prefetch needs more space. Approximate folder bars were rendered on Android from cached children with no network jobs.
+
+### Physical readers
 
 Before relying on a physical reader, check:
 
