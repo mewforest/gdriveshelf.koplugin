@@ -1,0 +1,95 @@
+{
+  "cb7": "skipped",
+  "tests": [
+    {
+      "format": "epub",
+      "sidecar": "missing",
+      "height": 120,
+      "result": "pass",
+      "width": 80
+    },
+    {
+      "format": "epub",
+      "sidecar": "empty",
+      "height": 120,
+      "result": "pass",
+      "width": 80
+    },
+    {
+      "format": "epub",
+      "sidecar": "corrupt",
+      "height": 120,
+      "result": "pass",
+      "width": 80
+    },
+    {
+      "format": "epub",
+      "sidecar": "valid",
+      "height": 120,
+      "result": "pass",
+      "width": 80
+    },
+    {
+      "format": "pdf",
+      "sidecar": "missing",
+      "height": 426,
+      "result": "pass",
+      "width": 320
+    },
+    {
+      "format": "pdf",
+      "sidecar": "empty",
+      "height": 426,
+      "result": "pass",
+      "width": 320
+    },
+    {
+      "format": "pdf",
+      "sidecar": "corrupt",
+      "height": 426,
+      "result": "pass",
+      "width": 320
+    },
+    {
+      "format": "pdf",
+      "sidecar": "valid",
+      "height": 426,
+      "result": "pass",
+      "width": 320
+    },
+    {
+      "format": "cbz",
+      "sidecar": "missing",
+      "height": 120,
+      "result": "pass",
+      "width": 80
+    },
+    {
+      "format": "cbz",
+      "sidecar": "empty",
+      "height": 120,
+      "result": "pass",
+      "width": 80
+    },
+    {
+      "format": "cbz",
+      "sidecar": "corrupt",
+      "height": 120,
+      "result": "pass",
+      "width": 80
+    },
+    {
+      "format": "cbz",
+      "sidecar": "valid",
+      "height": 120,
+      "result": "pass",
+      "width": 80
+    }
+  ],
+  "active_document": "preserved",
+  "native_sidecar_accesses": 0,
+  "provider_class": "unchanged",
+  "network_requests": 0,
+  "immutable_cover": "private and survives metadata eviction",
+  "offline_metadata": "restored"
+}

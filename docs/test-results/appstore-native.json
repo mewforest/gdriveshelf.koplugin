@@ -1,0 +1,147 @@
+{
+  "upstream_ref": "ab4ca658a0e4b6c59ef6d6e2b096ba250442be76",
+  "runtime": "official macOS ARM64 KOReader v2026.07 API; official Android ARM64 KOReader v2026.07 on Android 11 / API 30",
+  "transport": "socket.http.request replaced only for synthetic GitHub responses",
+  "cases": [
+    {
+      "profile": "fresh-verified",
+      "protected_files": 11,
+      "install": {
+        "real_network_requests": 0,
+        "tracked": true,
+        "installed_version": "0.1.701",
+        "nested_folder": "gdriveshelf.koplugin/_meta.lua",
+        "state_bytes_mtime_permissions": "unchanged",
+        "route": "release",
+        "latest_check": "up to date",
+        "mode": "fresh",
+        "github_transport_requests": 10
+      },
+      "restart": {
+        "real_network_requests": 0,
+        "credential_reimport": false,
+        "native_progress": "preserved",
+        "mode": "fresh",
+        "download_queue": "preserved",
+        "manual_metadata_outbox": "preserved",
+        "history": "preserved",
+        "route": "release",
+        "version": "0.1.701",
+        "latest_check": "up to date",
+        "pending_progress": "preserved",
+        "settings": "preserved"
+      },
+      "platform": "macOS ARM64"
+    },
+    {
+      "profile": "legacy-verified",
+      "protected_files": 11,
+      "install": {
+        "tracked": true,
+        "mode": "legacy",
+        "nested_folder": "gdriveshelf.koplugin/_meta.lua",
+        "installed_version": "0.1.701",
+        "state_bytes_mtime_permissions": "unchanged",
+        "latest_check": "up to date",
+        "route": "release",
+        "github_transport_requests": 8,
+        "real_network_requests": 0
+      },
+      "restart": {
+        "credential_reimport": false,
+        "settings": "preserved",
+        "native_progress": "preserved",
+        "pending_progress": "preserved",
+        "download_queue": "preserved",
+        "route": "release",
+        "real_network_requests": 0,
+        "manual_metadata_outbox": "preserved",
+        "latest_check": "up to date",
+        "history": "preserved",
+        "version": "0.1.701",
+        "mode": "legacy"
+      },
+      "platform": "macOS ARM64"
+    },
+    {
+      "profile": "source-verified",
+      "protected_files": 11,
+      "install": {
+        "route": "source",
+        "nested_folder": "gdriveshelf.koplugin/_meta.lua",
+        "installed_version": "0.1.701",
+        "latest_check": "up to date",
+        "tracked": true,
+        "mode": "fresh",
+        "real_network_requests": 0,
+        "state_bytes_mtime_permissions": "unchanged",
+        "github_transport_requests": 10
+      },
+      "restart": {
+        "latest_check": "up to date",
+        "route": "source",
+        "settings": "preserved",
+        "credential_reimport": false,
+        "native_progress": "preserved",
+        "pending_progress": "preserved",
+        "download_queue": "preserved",
+        "manual_metadata_outbox": "preserved",
+        "real_network_requests": 0,
+        "mode": "fresh",
+        "history": "preserved",
+        "version": "0.1.701"
+      },
+      "platform": "macOS ARM64"
+    },
+    {
+      "profile": "android-app-private-v2",
+      "platform": "Android ARM64 / API 30",
+      "protected_files": 11,
+      "synthetic_fixture": true,
+      "separate_process_restart": true,
+      "install": {
+        "real_network_requests": 0,
+        "nested_folder": "gdriveshelf.koplugin/_meta.lua",
+        "state_bytes_mtime_permissions": "unchanged",
+        "latest_check": "up to date",
+        "route": "release",
+        "installed_version": "0.1.701",
+        "mode": "legacy",
+        "tracked": true,
+        "github_transport_requests": 8
+      },
+      "restart": {
+        "latest_check": "up to date",
+        "history": "preserved",
+        "mode": "legacy",
+        "settings": "preserved",
+        "manual_metadata_outbox": "preserved",
+        "real_network_requests": 0,
+        "credential_reimport": false,
+        "version": "0.1.701",
+        "native_progress": "preserved",
+        "pending_progress": "preserved",
+        "download_queue": "preserved",
+        "route": "release"
+      },
+      "native_summary": {
+        "tracked": 1,
+        "unmatched": 0,
+        "needs_update": 0
+      },
+      "package_sha256": "5516e62b13c1c29ff2655b923fbe62e09ae6dd015b7db05df1db5eecedf3bf76",
+      "screenshot": "../screenshots/appstore-update-en.png"
+    }
+  ],
+  "limitations": [
+    "Real public discovery/download not tested while repository remains private",
+    "AppStore checkAllUpdates used upstream official synchronous fallback; async cancellation not exercised",
+    "In the original macOS fixtures, runtime bundled plugins remained visible, so screenshots show an additional same-name runtime plugin; assertions select the custom-root target",
+    "Legacy v0.1.6 lacks a metadata version, so initial fixture update availability uses a later synthetic release date; subsequent checks use the installed literal version"
+  ],
+  "checked_at": "2026-11-07",
+  "synthetic_update_versions": [
+    "0.1.700",
+    "0.1.701"
+  ]
+}

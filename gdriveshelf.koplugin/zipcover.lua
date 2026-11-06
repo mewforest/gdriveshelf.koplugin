@@ -46,7 +46,9 @@ local function extract(file,fetch,options)
    if not lo then lo,hi=r[1],r[2]elseif r[1]<=hi+1 then hi=math.max(hi,r[2])else covered=covered+hi-lo+1;lo,hi=r[1],r[2]end
   end
   covered=covered+hi-lo+1;assert(options.local_file or covered<size,'Complete remote ZIP refused')
-  local data=assert(fetch(first,last));assert(#data==count,'Incomplete ZIP range')
+  local data,why=fetch(first,last)
+  if not data and type(why)=='table'and type(why.code)=='string'then error(why,0)end
+  assert(data);assert(#data==count,'Incomplete ZIP range')
   ranges=nextRanges;transferred=transferred+count;return data
  end
  local tail=read(size-math.min(65557,size-1),size-1);local eocd
@@ -85,6 +87,7 @@ end
 function Z.extract(file,fetch,options)
  local ok,data,image,stats=pcall(extract,file,fetch,options)
  if ok then return data,image,stats end
+ if type(data)=='table'and type(data.code)=='string'then return nil,data end
  return nil,{code='preview',message='Archive preview unavailable: unsupported, changed, damaged or over budget'}
 end
 return Z

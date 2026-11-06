@@ -1,0 +1,52 @@
+local H=require('tests/helper');local Provider=require('providers/gdrive')
+local function decode(s)return(s:gsub('%%(%x%x)',function(x)return string.char(tonumber(x,16))end))end
+local function fixture(pages)
+ local calls={};local p=Provider.new{credentials={access_token='test'},json={decode=function(s)return pages[s]end},transport=function(r)
+  calls[#calls+1]=r;local page=pages[#calls];return page.status or 200,page.headers or {},page.body
+ end};return p,calls
+end
+H.test('grouped parents publish complete buckets across empty pages',function()
+ local p,calls=fixture({{body='one'},{body='two'},{body='three'},one={files={{id='b',name='B.cbz',parents={'B'},version='1'}},nextPageToken='next'},two={files={},nextPageToken='last'},three={files={{id='a',name='A.epub',parents={'A'},driveId='drive',trashed=false}}}})
+ assert(type(p.listParents)=='function','Grouped parent listing is missing')
+ local buckets=assert(p:listParents({'A','B','empty'}));H.eq(#calls,3);H.eq(#buckets.empty,0);H.eq(buckets.B[1].id,'b');H.eq(buckets.A[1].drive_id,'drive')
+ local url=decode(calls[1].url);assert(url:find("'A' in parents",1,true)and url:find(" or ",1,true));assert(#calls[1].url<=4096)
+end)
+H.test('grouped parents fail closed on malformed or incomplete later pages',function()
+ local p=fixture({{body='one'},{body='two'},one={files={{id='a',name='A.cbz',parents={'A'}}},nextPageToken='next'},two={files={},incompleteSearch=true}})
+ local buckets,e=p:listParents({'A','B'});assert(not buckets and e.code=='invalid_response')
+ p=fixture({{body='bad'},bad={files={{id='a',name='A.cbz',parents={'outside'}}}}});buckets,e=p:listParents({'A'});assert(not buckets and e.code=='invalid_response')
+end)
+H.test('grouped parent count and URL bounds reject before transport',function()
+ local p,calls=fixture({});local ids={};for i=1,21 do ids[i]='p'..i end
+ local v,e=p:listParents(ids);assert(not v and e.code=='invalid_argument');H.eq(#calls,0)
+ v,e=p:listParents({string.rep('a',5000)});assert(not v and e.code=='invalid_argument');H.eq(#calls,0)
+end)
+H.test('change pages preserve removals without requiring file metadata',function()
+ local p,calls=fixture({{body='token'},{body='page'},token={startPageToken='begin'},page={changes={{fileId='gone',removed=true},{fileId='book',removed=false,file={id='book',name='B.cbz',parents={'folder'},version='2',trashed=true,driveId='shared'}}},newStartPageToken='after'}})
+ H.eq(p:getStartToken({drive_id='shared'}),'begin');local page=assert(p:changes('begin',{drive_id='shared'}))
+ H.eq(page.new_start_token,'after');H.eq(page.changes[1].file_id,'gone');assert(page.changes[1].removed);assert(page.changes[2].entry.trashed)
+ assert(decode(calls[2].url):find('driveId=shared',1,true));assert(not decode(calls[2].url):find('q=',1,true))
+end)
+H.test('change page cannot advance without a valid checkpoint or matching identity',function()
+ local p=fixture({{body='bad'},bad={changes={}}});local v,e=p:changes('begin');assert(not v and e.code=='invalid_response')
+ p=fixture({{body='bad'},bad={changes={{fileId='a',file={id='b',name='B'}}},newStartPageToken='after'}});v,e=p:changes('begin');assert(not v and e.code=='invalid_response')
+end)
+H.test('provider carries bounded retry delay and safe request diagnostics',function()
+ local p=fixture({{status=429,headers={['Retry-After']='17'},body='private-token'}});local events={}
+ p.trace=function(event,fields)events[#events+1]={event=event,fields=fields}end
+ local value,e=p:list('secret-folder');assert(not value and e.status==429 and e.retry_after==17);H.eq(events[1].event,'request');H.eq(events[1].fields.operation,'list');H.eq(events[1].fields.status,429)
+ for k,v in pairs(events[1].fields)do assert(not tostring(v):find('secret',1,true) and not tostring(v):find('private',1,true))end
+end)
+H.test('invalid grant becomes terminal auth without reflecting error text',function()
+ local p=fixture({{status=400,body='private-token'}});p.credentials={refresh_token='r',client_id='c'}
+ local _,e=p:list('folder');H.eq(e.code,'auth');assert(not e.message:find('private',1,true))
+end)
+H.test('shared-drive parent groups search that full drive rather than user-accessed corpus',function()
+ local p,calls=fixture({{body='empty'},empty={files={}}})
+ assert(p:listParents({'folder'},{drive_id='shared'}));local url=decode(calls[1].url);assert(url:find('corpora=drive',1,true)and url:find('driveId=shared',1,true))
+end)
+H.test('object-shaped file/change collections and false page tokens fail closed',function()
+ local p=fixture({{body='bad'},bad={files={unexpected={id='a',name='A',parents={'p'}}}}});local value,e=p:listParents({'p'});assert(not value and e.code=='invalid_response')
+ p=fixture({{body='bad'},bad={files={},nextPageToken=false}});value,e=p:listParents({'p'});assert(not value and e.code=='pagination')
+ p=fixture({{body='bad'},bad={changes={unexpected={fileId='a',removed=true}},newStartPageToken='after'}});value,e=p:changes('before');assert(not value and e.code=='invalid_response')
+end)

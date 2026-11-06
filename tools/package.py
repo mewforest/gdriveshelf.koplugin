@@ -23,6 +23,10 @@ def package(version, output=None):
             if any(word in source.name.lower() for word in ['credential', 'refresh_token', '.part']):
                 raise ValueError('Private/runtime file in package input')
             data = source.read_bytes()
+            if name == 'gdriveshelf.koplugin/_meta.lua':
+                data, count = re.subn(rb"(?m)^(\s*version\s*=\s*)['\"][^'\"]+['\"]", lambda match: match[1] + ("'" + version + "'").encode(), data)
+                if count != 1:
+                    raise ValueError('Expected one literal plugin metadata version')
             if re.search(rb'(?:gh[pousr]_[A-Za-z0-9]{30,}|GOCSPX-[A-Za-z0-9_-]{15,}|AIza[A-Za-z0-9_-]{30,})', data):
                 raise ValueError(f'Possible credential in {name}')
             info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))

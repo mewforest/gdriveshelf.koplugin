@@ -31,6 +31,21 @@ test('lazy progress only sees current visible page and redraw does not reschedul
  p:visibleProgress(menu);assert(#captured==2 and captured[1].id=='c' and captured[2].id=='d')
  p:visibleProgress(menu);assert(calls==1)
  menu.page=3;p:visibleProgress(menu);assert(calls==2 and #captured==1 and captured[1].id=='e')
+ menu.item_table[5]={entry={id='fresh'}};p:visibleProgress(menu);assert(calls==3 and captured[1].id=='fresh','Newly arrived visible entries were not checked')
+end)
+test('folder-only visible page cancels summaries from the prior document page',function()
+ local cancelled=0;local p=instance({cancelProgress=function()cancelled=cancelled+1 end})
+ p:visibleProgress({page=1,perpage=7,item_table={{entry={id='folder',is_folder=true}}}})
+ assert(cancelled==1)
+end)
+test('closing the current folder menu cancels progress without cancelling a newer menu',function()
+ local savedMenu,savedDevice=package.loaded['ui/widget/menu'],package.loaded.device
+ package.loaded['ui/widget/menu']={new=function(_,options)options.page=1;options.perpage=7;return options end}
+ package.loaded.device={screen={getWidth=function()return 600 end,getHeight=function()return 800 end}}
+ local cancelled=0;local p=instance({lazyProgress=function()end,cancelProgress=function()cancelled=cancelled+1 end})
+ local m=p:menu('Folder',{{entry={id='book',name='Book.cbz'}}},{lazy=true});p.folder_menu=m;m.close_callback();assert(cancelled==1 and p.folder_menu==nil)
+ p.folder_menu={};m.close_callback();assert(cancelled==1)
+ package.loaded['ui/widget/menu'],package.loaded.device=savedMenu,savedDevice
 end)
 test('remote restore never executes Lua or writes changed book metadata',function()
  local writes=0
@@ -144,4 +159,18 @@ test('file sorting is reachable in folder actions and persists independently of 
  p:showFileSort();assert(rows[1].text:find('Natural',1,true))
  rows[3].callback();assert(p.settings.sort=='size'and p.settings.title_sort=='read'and saved==1)
  rows[#rows].callback();assert(p.settings.reverse and saved==2)
+end)
+test('Drive parent navigation is visible before a native Menu path stack exists',function()
+ local originalMenu,originalDevice=package.loaded['ui/widget/menu'],package.loaded.device
+ local Menu={}
+ function Menu:extend(t)return setmetatable(t,{__index=self})end
+ function Menu:updatePageInfo()self.page_return_arrow:showHide(self.onReturn~=nil)end
+ function Menu:new(options)
+  local arrow={showHide=function(a,v)a.visible=v end,enableDisable=function(a,v)a.enabled=v end}
+  options.page_return_arrow=arrow;setmetatable(options,{__index=self});options:updatePageInfo();return options
+ end
+ package.loaded['ui/widget/menu']=Menu;package.loaded.device={screen={getWidth=function()return 600 end,getHeight=function()return 800 end}}
+ local p=instance({});local child=p:menu('Drive folder',{}, {parent_enabled=true})
+ assert(child.page_return_arrow.visible and child.page_return_arrow.enabled,'Up arrow hidden until an unrelated native redraw')
+ package.loaded['ui/widget/menu'],package.loaded.device=originalMenu,originalDevice
 end)

@@ -7,12 +7,12 @@ local Sync=require('gdriveshelf/sync')
 local Core={};Core.__index=Core
 local MiB=1048576
 local function remoteEntry(entry)
- local out={};for _,key in ipairs{'id','name','parent_id','is_folder','size','created_time','modified_time','checksum','version','etag','mime_type','first_seen'}do out[key]=entry[key]end
+ local out={};for _,key in ipairs{'id','name','parent_id','is_folder','size','created_time','modified_time','checksum','version','etag','mime_type','first_seen','drive_id','trashed'}do out[key]=entry[key]end
  return out
 end
 local function errorValue(code,message)return {code=code,message=message}end
 function Core.new(o)
- local self=setmetatable({storage=o.storage,jobs=o.jobs,credentials=o.credentials,provider_factory=o.provider_factory,settings=o.settings or {},onchange=o.onchange,waiters={},active_id=nil},Core)
+ local self=setmetatable({storage=o.storage,jobs=o.jobs,credentials=o.credentials,provider_factory=o.provider_factory,settings=o.settings or {},onchange=o.onchange,logger=o.logger,waiters={},active_id=nil,retry_failures=0},Core)
  self.index_path=self.storage.root..'/index.json'
  local saved,readerr=self.storage:readJSON(self.index_path,256*MiB)
  if not saved and self.storage:exists(self.index_path)then error('Cannot read durable index; existing progress was preserved: '..tostring(readerr))end
@@ -35,38 +35,101 @@ function Core:stopRelocation()
 end
 function Core:save()return self.storage:writeJSON(self.index_path,self.state)end
 function Core:emit(kind,entry,err)if self.onchange then self.onchange(kind,entry,err)end end
-function Core:online()return not self.settings.offline and not self.sleeping and os.time()>=(self.retry_after or 0)end
+function Core:networkState()
+ if self.settings.offline then return 'offline'end
+ if self.sleeping then return 'sleep'end
+ if self.auth_error then return 'auth'end
+ if os.time()<(self.retry_after or 0)then return 'retry'end
+ return 'online'
+end
+-- Online means work may be queued. Jobs holds network work during a retry delay.
+function Core:online()local state=self:networkState();return state=='online'or state=='retry'end
+function Core:syncNetworkJobs()
+ local state=self:networkState()
+ self.jobs.paused=state=='retry'or state=='auth'
+ self.jobs:setOffline(self.settings.offline==true or self.sleeping==true)
+ if self.last_network_state~=state then self.last_network_state=state;self:emit('network_state')end
+end
+function Core:resetNetwork(clear_auth)
+ self.retry_after=nil;self.retry_failures=0
+ if clear_auth then self.auth_error=nil end
+ if self.retry_tick and self.jobs.unschedule then self.jobs.unschedule(self.retry_tick)end
+ self:syncNetworkJobs();self:resume()
+end
+function Core:suspend()
+ self.sleeping=true;self:syncNetworkJobs()
+end
+function Core:wake()
+ self.sleeping=false;self:resetNetwork()
+end
 function Core:setOffline(value)
- self.settings.offline=value;self.jobs:setOffline(value or self.sleeping or false)
- if not value then self.retry_after=nil;self:resume()end
+ self.settings.offline=value==true
+ if not value then self:resetNetwork()else self:syncNetworkJobs()end
  self:emit('offline')
 end
-function Core:provider()return self.provider_factory(self.credentials)end
+function Core:provider()
+ local provider=self.provider_factory(self.credentials)
+ if self.logger then provider.trace=function(name,fields)pcall(self.logger.event,self.logger,name,fields)end end
+ return provider
+end
 function Core:sync(provider)
  return Sync.new{provider=provider or {},sdr=SDR,storage=self.storage,state=self.state.sync,offline=self.settings.offline}
 end
-function Core:network(key,work,done,front,before,progress)
- if not self:online() then return false end
- return self.jobs:enqueue(key,function(report)
-  local p=self:provider();local value,err=work(p,report)
-  if value and type(value)=='table' then value.data=nil end -- Native SDR survives JSON transport as Lua literals.
-  return {result=value,credentials=p.credentials},err
- end,function(envelope,err)
+function Core:network(key,work,done,front,before,progress,local_task,options)
+ if not local_task and not self:online()then return false end
+ self.jobs.logger=self.logger;self:syncNetworkJobs()
+ local attempts=0
+ local job_options={timeout=options and options.timeout}
+ job_options.retry=function(envelope,err)
+  if self.logger and envelope and type(envelope.trace)=='table'then
+   for i=1,math.min(128,#envelope.trace)do pcall(self.logger.event,self.logger,'request',envelope.trace[i])end
+  end
   if envelope and envelope.credentials then self.credentials=envelope.credentials;if self.oncredentials then self.oncredentials(self.credentials)end end
   local result=envelope and envelope.result
-  if not result then
-   if err and err.code~='cancelled' and err.code~='paused' and err.code~='space' and err.code~='limit' and err.code~='preview' and err.code~='range' and err.code~='ambiguous_stem' and err.code~='ambiguous_sidecar' and err.code~='ambiguous_metadata' then self.retry_after=os.time()+30
-    if self.jobs.schedule then self.jobs.schedule(function()if self:online()then self:resume()end end,31)end
-   end
-   if done then done(nil,err or errorValue('network','Network request failed'))end
-  else
-   self.retry_after=nil;if done then done(result)end
+  if result then
+   if not local_task then self.retry_after=nil;self.retry_failures=0 end
+   return false
   end
+  attempts=attempts+1
+  local status=err and tonumber(err.status)
+  local transient=not local_task and err and(err.code=='network'or(err.code=='api'and status and(status==408 or status==429 or(status>=500 and status<=599))))
+  if transient then
+   self.retry_failures=math.min((self.retry_failures or 0)+1,6)
+   local delay=math.min(30,2^(self.retry_failures-1));local requested=tonumber(err.retry_after)
+   if requested and requested==requested and requested>0 then delay=math.max(delay,math.min(86400,requested))end
+   self.retry_after=os.time()+delay;self:syncNetworkJobs()
+   if not self.retry_tick then self.retry_tick=function()if self:networkState()=='online'then self:syncNetworkJobs()end end end
+   if self.jobs.unschedule then self.jobs.unschedule(self.retry_tick)end
+   if self.jobs.schedule then self.jobs.schedule(self.retry_tick,delay)end
+  elseif not local_task and err and(err.code=='auth'or err.code=='unauthorized')then
+   self.auth_error=true;self:syncNetworkJobs()
+  end
+  return transient and attempts<3 or false
+ end
+ return self.jobs:enqueue(key,function(report)
+  local p=self:provider();local trace={}
+  -- Children return bounded diagnostics through private IPC; only the parent
+  -- writes logs, so rotation cannot race a worker request completion.
+  if self.logger then p.trace=function(name,fields)
+   if name~='request'or type(fields)~='table'or #trace>=128 then return end
+   local safe={}
+   for _,field in ipairs{'operation','status','bytes','duration','error'}do
+    local value=rawget(fields,field)
+    if(type(value)=='string'and #value<=40)or(type(value)=='number'and value==value and value>=0 and value<=9007199254740991)then safe[field]=value end
+   end
+   trace[#trace+1]=safe
+  end end
+  local value,err=work(p,report)
+  if value and type(value)=='table' then value.data=nil end -- Native SDR survives JSON transport as Lua literals.
+  return {result=value,credentials=p.credentials,trace=trace},err
+ end,function(envelope,err)
+  local result=envelope and envelope.result
+  if done then if result then done(result)else done(nil,err or errorValue('network','Network request failed'))end end
  end,front,function()
-  if not self:online()then return nil,errorValue('paused','Network requests are paused')end
+  if not local_task and self:networkState()~='online'then return nil,{code='paused',message='Waiting for network requests to resume',defer=true}end
   if before then return before()end
   return true
- end,progress)
+ end,progress,local_task,job_options)
 end
 function Core:cache()
  return Cache.new{entries=self.state.entries,auto_limit=(self.settings.auto_mib or 3072)*MiB,meta_limit=(self.settings.meta_mib or 256)*MiB,reserve=512*MiB,free_bytes=function(pool)return self.storage:freeBytes(pool=='meta'and self.storage.root or self.storage.books_dir)end,volume=self.storage.volume and function(pool)return self.storage:volume(pool=='meta'and self.storage.root or self.storage.books_dir)end}
@@ -165,12 +228,14 @@ function Core:download(entry,pool,callback)
  local wanted=self.state.downloads[entry.id]
  if wanted then if pool=='offline' then wanted.pool='offline'end else self.state.downloads[entry.id]={entry=entry,pool=pool}end
  self:save()
+ if not wanted then self:emit('queued',entry)end
  if not self:online()then return false end
  local request=self.state.downloads[entry.id]
  entry.parent_name=(self.state.folders[entry.parent_id]or{}).name or entry.parent_name
  local path=(old and old.path) or self.storage:filePath(entry,pool)
  local incoming=path..'.incoming-'..tostring(self.jobs.nonce or 'test')
  local function before()
+  self.storage:remove(incoming);self.storage:remove(incoming..'.part');self.storage:remove(incoming..'.png')
   local size=tonumber(entry.size)
   local max=pool=='meta' and 8*MiB or size
   if not size or size<0 or (pool=='meta' and size>max)then return nil,errorValue('limit','File size is unknown or metadata is too large')end
@@ -225,7 +290,11 @@ function Core:open(entry,callback)
  self:stopRelocation()
  local cached=self:cached(entry.id)
  if cached then self.opening_id=entry.id;self:save();callback(cached.path);return end
- if not self:online()then callback(nil,errorValue('offline','This file is not downloaded. Enable online mode or reconnect.'));return end
+ if not self:online()then
+  local state=self:networkState()
+  local messages={offline='This file is not downloaded. Enable online mode or reconnect.',sleep='Requests will resume when the device wakes.',auth='Import authorization credentials again.'}
+  callback(nil,errorValue(state,messages[state]or 'Network requests cannot start.'));return
+ end
  self.opening_id=entry.id
  if self.index_job then self:cancelIndex()end
  if self.deep_job then self:cancelDeepScan()end
@@ -351,6 +420,7 @@ function Core:remote(entry)
  local c=self:cached('sdr:'..entry.id);return c and self.storage:readJSON(c.path)
 end
 function Core:resume()
+ self:syncNetworkJobs()
  if self.relocating then return end
  for _,d in pairs(self.state.downloads)do self:download(d.entry,d.pool)end
  self:flushPending()
@@ -422,4 +492,8 @@ function Core:offlineFolders()
 end
 require('gdriveshelf/scanning')(Core)
 require('gdriveshelf/relocation').install(Core)
+require('gdriveshelf/indexer')(Core)
+require('gdriveshelf/progress')(Core)
+require('gdriveshelf/localcovers').attach(Core)
+require('gdriveshelf/overrides').attach(Core)
 return Core

@@ -6,8 +6,8 @@ local UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files'
 local API_V2 = 'https://www.googleapis.com/drive/v2/files'
 local UPLOAD_V2 = 'https://www.googleapis.com/upload/drive/v2/files'
 local TOKEN = 'https://oauth2.googleapis.com/token'
-local FIELDS = 'id,name,parents,mimeType,size,createdTime,modifiedTime,md5Checksum,version'
-local FIELDS_V2 = 'id,title,parents(id),mimeType,fileSize,modifiedDate,md5Checksum,version,etag'
+local FIELDS = 'id,name,parents,mimeType,size,createdTime,modifiedTime,md5Checksum,version,driveId,trashed'
+local FIELDS_V2 = 'id,title,parents(id),mimeType,fileSize,modifiedDate,md5Checksum,version,etag,driveId,labels(trashed)'
 local JSON_LIMIT = 4 * 1024 * 1024
 local function err(code, message, status) return {code=code,message=message,status=status} end
 local function escape(s) return (tostring(s):gsub('[^%w%-._~]',function(c) return string.format('%%%02X',c:byte()) end)) end
@@ -23,6 +23,11 @@ local function header(h, key)
 end
 local function byte_limit(n) return type(n)=='number' and n>=0 and n==n and n<=9007199254740991 end
 local function valid(s) return type(s)=='string' and #s>0 and not s:find('[%z\r\n]') end
+local function array(t)
+    if type(t)~='table'then return false end
+    local n=#t;for k in pairs(t)do if type(k)~='number'or k<1 or k>n or k~=math.floor(k)then return false end end
+    for i=1,n do if t[i]==nil then return false end end;return true
+end
 local function normalize(f, parent, headers)
     if type(f)~='table' or not valid(f.id) or type(f.name or f.title)~='string' then return nil,err('invalid_response','Invalid Drive file metadata') end
     local size = tonumber(f.size or f.fileSize)
@@ -31,7 +36,8 @@ local function normalize(f, parent, headers)
     if type(first_parent)=='table' then first_parent=first_parent.id end
     return {id=f.id,name=f.name or f.title,parent_id=first_parent or parent,
         is_folder=f.mimeType=='application/vnd.google-apps.folder',size=size,created_time=f.createdTime or f.createdDate,modified_time=f.modifiedTime or f.modifiedDate,
-        checksum=f.md5Checksum,version=f.version,etag=header(headers,'etag') or f.etag,mime_type=f.mimeType}
+        checksum=f.md5Checksum,version=f.version,etag=header(headers,'etag') or f.etag,mime_type=f.mimeType,
+        drive_id=f.driveId,trashed=f.trashed==true or(type(f.labels)=='table'and f.labels.trashed==true)}
 end
 
 -- LuaSec verifies the chain, but its HTTPS helper does not verify hostnames.
@@ -137,6 +143,13 @@ end
 -- calls r.sink(chunk), returns body=nil and must stop if the sink rejects data.
 function Provider:_send(r, limit, consumer)
     local chunks,total,sink_error={},0,nil
+    local started=os.time()
+    local operation=r.operation or (r.url==TOKEN and 'auth') or(r.url:find('alt=media',1,true)and(consumer and 'download'or 'read'))or(r.method=='POST'and 'mkdir')or(r.method=='PUT'and 'upload')or(r.url:find('/files?',1,true)and 'list')or(r.url:find('/changes?',1,true)and 'list')or 'stat'
+    local response_status
+    local function finish(value,e)
+        if self.trace then pcall(self.trace,'request',{operation=operation,status=response_status,bytes=total,duration=math.max(0,os.time()-started),error=e and e.code})end
+        return value,e
+    end
     r.redirect=false
     r.headers=r.headers or {}; r.headers['Accept-Encoding']='identity'
     r.sink=function(chunk, why)
@@ -150,17 +163,21 @@ function Provider:_send(r, limit, consumer)
         return 1
     end
     local ok,status,headers,body=pcall(self.transport,r)
-    if not ok or not tonumber(status) then return nil,sink_error or err('network','Network request failed') end
+    if not ok or not tonumber(status) then return finish(nil,sink_error or err('network','Network request failed')) end
     status=tonumber(status)
-    if status>=300 and status<400 then return nil,err('redirect','Unexpected redirect refused',status) end
+    response_status=status
+    if status>=300 and status<400 then return finish(nil,err('redirect','Unexpected redirect refused',status)) end
     if status<200 or status>=300 then
         local code=status==412 and 'conflict' or (status==401 and 'unauthorized' or (status==404 and 'not_found' or 'api'))
-        return nil,err(code, status==412 and 'Remote file changed; preserve both versions' or ('Drive request failed (HTTP '..status..')'),status)
+        local e=err(code,status==412 and 'Remote file changed; preserve both versions' or ('Drive request failed (HTTP '..status..')'),status)
+        local delay=tonumber(header(headers,'retry-after')or '')
+        if delay and delay>=0 and delay<math.huge then e.retry_after=math.min(86400,math.ceil(delay))end
+        return finish(nil,e)
     end
-    if r.validate_headers and not r.validate_headers(status,headers or {})then return nil,err('range','Partial download is unavailable or invalid',status)end
+    if r.validate_headers and not r.validate_headers(status,headers or {})then return finish(nil,err('range','Partial download is unavailable or invalid',status))end
     if type(body)=='string' and not sink_error then r.sink(body) end
-    if sink_error then return nil,sink_error end
-    return {body=consumer and nil or table.concat(chunks),headers=headers or {},size=total}
+    if sink_error then return finish(nil,sink_error) end
+    return finish({body=consumer and nil or table.concat(chunks),headers=headers or {},size=total})
 end
 
 function Provider:_refresh()
@@ -170,7 +187,10 @@ function Provider:_refresh()
     if c.client_secret then form.client_secret=c.client_secret end
     local body=query(form)
     local result,e=self:_send({url=TOKEN,method='POST',body=body,headers={['Content-Type']='application/x-www-form-urlencoded',['Content-Length']=tostring(#body)}},JSON_LIMIT)
-    if not result then return nil,e end
+    if not result then
+        if e and(e.status==400 or e.status==401 or e.status==403)then return nil,err('auth','Import authorization credentials again',e.status)end
+        return nil,e
+    end
     local data; data,e=self:_decode(result.body)
     if not data or not valid(data.access_token) then return nil,e or err('auth','Token refresh failed') end
     c.access_token=data.access_token
@@ -204,17 +224,87 @@ function Provider:list(parent_id)
         local response,e=self:_request({url=API..'?'..query(args),method='GET'})
         if not response then return nil,e end
         local page; page,e=self:_decode(response.body); if not page then return nil,e end
-        if type(page.files)~='table' or page.incompleteSearch then return nil,err('invalid_response','Incomplete Drive file listing') end
+        if not array(page.files) or page.incompleteSearch then return nil,err('invalid_response','Incomplete Drive file listing') end
         for _,file in ipairs(page.files) do
             local entry; entry,e=normalize(file,parent_id); if not entry then return nil,e end
             all[#all+1]=entry
             if #all>100000 then return nil,err('too_large','Folder contains too many entries') end
         end
         token=page.nextPageToken
-        if token and (not valid(token) or seen[token]) then return nil,err('pagination','Invalid or repeated page token') end
+        if token~=nil and (not valid(token) or seen[token]) then return nil,err('pagination','Invalid or repeated page token') end
         if token then seen[token]=true end
     until not token
     return all
+end
+
+-- The caller only sees buckets once every page succeeds, including empty ones.
+function Provider:listParents(ids,scope)
+    if not array(ids)or #ids<1 or #ids>20 then return nil,err('invalid_argument','Between one and twenty parents are required')end
+    if scope~=nil and(type(scope)~='table'or(scope.drive_id~=nil and not valid(scope.drive_id)))then return nil,err('invalid_argument','Invalid grouped listing scope')end
+    local buckets,terms={},{}
+    for _,id in ipairs(ids)do
+        if not valid(id)or buckets[id]then return nil,err('invalid_argument','Invalid or repeated parent ID')end
+        buckets[id]={};terms[#terms+1]=quote(id)..' in parents'
+    end
+    local token,seen,total=nil,{},0
+    repeat
+        local args={q='('..table.concat(terms,' or ')..') and trashed = false',fields='nextPageToken,incompleteSearch,files('..FIELDS..')',pageSize=1000,supportsAllDrives='true',includeItemsFromAllDrives='true'}
+        if scope and scope.drive_id then args.corpora='drive';args.driveId=scope.drive_id end
+        if token then args.pageToken=token end
+        local url=API..'?'..query(args)
+        if #url>4096 then return nil,err('invalid_argument','Grouped listing URL exceeds limit')end
+        local response,e=self:_request({url=url,method='GET',operation='list'});if not response then return nil,e end
+        local page;page,e=self:_decode(response.body);if not page then return nil,e end
+        if not array(page.files)or page.incompleteSearch then return nil,err('invalid_response','Incomplete Drive file listing')end
+        for _,file in ipairs(page.files)do
+            local entry;entry,e=normalize(file);if not entry then return nil,e end
+            local bucket=buckets[entry.parent_id]
+            if not bucket then return nil,err('invalid_response','Grouped listing supplied an unexpected parent')end
+            total=total+1;if total>100000 then return nil,err('too_large','Grouped listing contains too many entries')end
+            bucket[#bucket+1]=entry
+        end
+        token=page.nextPageToken
+        if token~=nil and(not valid(token)or seen[token])then return nil,err('pagination','Invalid or repeated page token')end
+        if token then seen[token]=true end
+    until not token
+    return buckets
+end
+
+local function changeScope(scope)
+    if scope~=nil and type(scope)~='table'then return nil,err('invalid_argument','Invalid change scope')end
+    if scope and scope.drive_id~=nil and not valid(scope.drive_id)then return nil,err('invalid_argument','Invalid shared drive ID')end
+    return {supportsAllDrives='true',driveId=scope and scope.drive_id}
+end
+function Provider:getStartToken(scope)
+    local args,e=changeScope(scope);if not args then return nil,e end
+    args.fields='startPageToken'
+    local response;response,e=self:_request({url='https://www.googleapis.com/drive/v3/changes/startPageToken?'..query(args),method='GET',operation='stat'});if not response then return nil,e end
+    local page;page,e=self:_decode(response.body);if not page then return nil,e end
+    if not valid(page.startPageToken)then return nil,err('invalid_response','Drive supplied no start token')end
+    return page.startPageToken
+end
+function Provider:changes(token,scope)
+    if not valid(token)then return nil,err('invalid_argument','A change token is required')end
+    local args,e=changeScope(scope);if not args then return nil,e end
+    args.pageToken=token;args.pageSize=1000;args.spaces='drive';args.includeRemoved='true';args.includeItemsFromAllDrives='true';args.includeCorpusRemovals='true'
+    args.fields='nextPageToken,newStartPageToken,changes(fileId,removed,changeType,driveId,file('..FIELDS..'))'
+    local response;response,e=self:_request({url='https://www.googleapis.com/drive/v3/changes?'..query(args),method='GET',operation='list'});if not response then return nil,e end
+    local page;page,e=self:_decode(response.body);if not page then return nil,e end
+    if not array(page.changes)or(not valid(page.nextPageToken)and not valid(page.newStartPageToken))or(page.newStartPageToken~=nil and not valid(page.newStartPageToken))then return nil,err('invalid_response','Invalid change page checkpoint')end
+    if page.nextPageToken~=nil and(not valid(page.nextPageToken)or page.nextPageToken==token)then return nil,err('pagination','Invalid or repeated change token')end
+    local out={changes={},next_page_token=page.nextPageToken,new_start_token=page.newStartPageToken}
+    for _,change in ipairs(page.changes)do
+        if change.changeType~='drive'then
+            if not valid(change.fileId)then return nil,err('invalid_response','Change has no file identity')end
+            local item={file_id=change.fileId,removed=change.removed==true}
+            if not item.removed then
+                item.entry,e=normalize(change.file)
+                if not item.entry or item.entry.id~=item.file_id then return nil,e or err('invalid_response','Changed file identity mismatch')end
+            end
+            out.changes[#out.changes+1]=item
+        else out.scope_changed=true end
+    end
+    return out
 end
 
 function Provider:stat(id)
@@ -229,7 +319,9 @@ function Provider:stat(id)
         result,e=self:_request({url=API_V2..'/'..escape(id)..'?'..query{fields=FIELDS_V2,supportsAllDrives='true',updateViewedDate='false'},method='GET'})
         if not result then return nil,e end
         data,e=self:_decode(result.body); if not data then return nil,e end
+        local previous=entry
         entry,e=normalize(data,nil,result.headers); if not entry then return nil,e end
+        entry.drive_id=entry.drive_id or previous.drive_id
         if not valid(entry.etag) then return nil,err('invalid_response','Drive supplied no conditional-write token') end
     end
     return entry
@@ -288,7 +380,7 @@ function Provider:range(entry,first,last,max_bytes)
  if not size or not byte_limit(first)or not byte_limit(last)or first~=math.floor(first)or last~=math.floor(last)or first>last or last>=size or (first==0 and last==size-1)or not byte_limit(max_bytes)or last-first+1>max_bytes then
   return nil,err('range','Invalid or complete-file range refused')
  end
- local r={url=API..'/'..escape(entry.id)..'?alt=media&supportsAllDrives=true',method='GET',headers={Range='bytes='..first..'-'..last}}
+ local r={url=API..'/'..escape(entry.id)..'?alt=media&supportsAllDrives=true',method='GET',operation='range',headers={Range='bytes='..first..'-'..last}}
  r.validate_headers=function(status,headers)
   local a,b,total=tostring(header(headers,'content-range')or ''):match('^bytes (%d+)%-(%d+)/(%d+)$')
   local valid=status==206 and tonumber(a)==first and tonumber(b)==last and tonumber(total)==size and (not header(headers,'content-encoding')or header(headers,'content-encoding')=='identity')
@@ -356,7 +448,7 @@ function Provider:upload(parent,name,path,existing_id,etag)
     if etag then headers['If-Match']=etag end
     local endpoint=existing_id and UPLOAD_V2 or UPLOAD
     local result,e=self:_request({url=endpoint..(existing_id and '/'..escape(existing_id) or '')..'?'..query{uploadType='multipart',fields=existing_id and FIELDS_V2 or FIELDS,supportsAllDrives='true'},
-        method=existing_id and 'PUT' or 'POST',source=source,headers=headers},JSON_LIMIT,nil,function() stage=0; return f:seek('set',0)~=nil end)
+        method=existing_id and 'PUT' or 'POST',operation='upload',source=source,headers=headers},JSON_LIMIT,nil,function() stage=0; return f:seek('set',0)~=nil end)
     f:close()
     if not result then return nil,e end
     local data; data,e=self:_decode(result.body); if not data then return nil,e end

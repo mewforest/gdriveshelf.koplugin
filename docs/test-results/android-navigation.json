@@ -1,0 +1,7 @@
+{
+  "checks": [
+    "Drive parent Up visible and enabled on first offline paint",
+    "Up navigates to Drive parent without online catalog work"
+  ],
+  "status": "passed"
+}

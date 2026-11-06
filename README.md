@@ -23,6 +23,12 @@ python3 gdriveshelf-authorize.py --client /path/to/client.json --output /path/to
 
 Import the **resulting credentials file**, not the OAuth client JSON. It contains private tokens: never commit it or attach it to an issue.
 
+## Updates with AppStore
+
+After this repository is public, [AppStore](https://github.com/omer-faruq/appstore.koplugin) can install and update the plugin on your reader. Add `mewforest/gdriveshelf.koplugin` by repository URL. For an existing manual installation, use AppStore's **Match repository** action once. Choose the release asset **`gdriveshelf.koplugin-<version>.zip`**, then restart KOReader after updating. Do not choose GitHub's source archives or the development branch for stable updates.
+
+The installed folder name stays `gdriveshelf.koplugin`. Authorization, settings, readable book paths, reading progress, history and pending uploads live outside the installed code and survive updates; no new Google sign-in is needed. Repository discovery and public downloading become available when the owner makes it public. The plugin does not change repository visibility or include its own updater.
+
 ## A library you can reach quickly
 
 Open **Google Drive Shelf** directly from KOReader's right-hand menu tab in the file browser or reader. You can also select it in **Start with**, or assign **Google Drive Shelf: open home folder**, **history**, or **current document folder** under the gesture editor's **General** actions.
@@ -35,7 +41,7 @@ The folder toolbar separates navigation, refresh, sorting, display mode and acti
 | Settings | Storage |
 | Grouped plugin settings | Storage pools and disk usage |
 
-Long-press a file or folder for downloads and other actions. The selection mode lets you keep several files offline at once. Folder rows show known document counts, downloaded size and a rough opened-chapter bar. Unknown counts remain unknown; a matching `.sdr` indicates an opened document, not a completed chapter.
+Long-press a file or folder for downloads and other actions. The selection mode lets you keep several files offline at once. Folder cards show downloaded size at the upper left and a known document count at the upper right. Containers show a subfolder count instead. Confirmed empty folders are hidden by default; unknown folders remain visible. A rough opened-chapter bar summarizes reading activity. Unknown counts remain unknown; a matching `.sdr` indicates an opened document, not a completed chapter.
 
 | Folder actions | Document information |
 | --- | --- |
@@ -43,9 +49,13 @@ Long-press a file or folder for downloads and other actions. The selection mode 
 
 Plugin history groups comics by folder and keeps ordinary books as individual entries. CBZ/CBR/CB7 are detected as comics; other formats are books. A folder's **Content type** can override this, including for PDF comics. History survives archive eviction.
 
+| Cached-document tiles | Background activity |
+| --- | --- |
+| Stable local previews with remote experiments disabled | Background download activity opens the queue |
+
 ## Downloads and offline reading
 
-A download shows its name, transferred bytes and verification stage. **Cancel** stops opening it; **In background** continues downloading without opening it later. The same feedback appears when the next chapter is still downloading at the end of a document.
+A download shows its name, transferred bytes and verification stage. **Cancel** stops opening it; **In background** continues downloading without opening it later. The same feedback appears when the next chapter is still downloading at the end of a document. A compact activity row in the catalog opens **Downloads and sync**, where background jobs remain visible. Prefetch supports 0–3 following files; downloads run sequentially.
 
 Before travelling, save the folders you need and enable **Offline mode**. Cached files open without a server request. Going online resumes pending progress uploads. KOReader must remain running for background work.
 
@@ -63,15 +73,22 @@ Documents use readable paths such as **`Books/Series name/01.cbz`**. Duplicate o
 
 Adjacent `cover.jpg`, Kotatsu Redo `index.json` and Mylar/Komga `series.json` can supply covers, names, authors and descriptions. Cover and descriptive-metadata downloads have separate switches. Service files and `.sdr` folders are hidden by default.
 
-Optional **Index home folder** checks its immediate child folders without downloading documents or remote SDR contents. New folders are checked immediately; existing folders are rechecked every 24 hours by default. Choose another interval or disable periodic checks. **Refresh** is available directly in the folder toolbar. Source-file versions invalidate cached information.
+The comic-folder header is enabled by default and shows a cover and bold title. Tap the title for the full information. Downloaded CBZ, EPUB, PDF and supported CBR documents can generate local previews without enabling experiments. A folder without its own cover uses the first available cached-document preview in natural filename order. CB7 cover extraction is not guaranteed by the current runtime.
+
+**Edit folder information** changes the title, description or cover. Edits take effect locally, queue safely while offline, and sync to a separate versioned `gdriveshelf.json` plus immutable cover files. Original `index.json`, `series.json`, `cover.jpg` and native progress are preserved. Conflicting edits retain both versions for a choice under **Downloads and sync**. **Cover from first document (beta)** can use an already-downloaded first chapter or a strictly bounded remote CBZ read; unsupported remote archives require downloading the chapter first.
+
+Optional **Index home folder recursively** asks for explicit consent and scans the selected home tree, excluding SDR contents. Documents are never downloaded for this catalog. After the first pass, ordinary refresh uses the [Drive change log](https://developers.google.com/workspace/drive/api/guides/manage-changes), with checks on catalog entry and wake limited to once per 30 seconds; manual Refresh checks immediately. **Reindex library** performs a cancellable repair pass. A local checkpoint resumes interrupted work. No shared cloud tree manifest is created. Covers and descriptions are separate low-priority tasks.
 
 ```mermaid
 flowchart LR
     Drive[Google Drive] <--> Provider[Drive provider]
-    Provider <--> Catalog[Folder catalog]
+    Provider <--> Changes[Scoped Drive change log]
+    Changes <--> Catalog[Local recursive catalog]
     Provider --> Books[Readable Books folders]
     Provider --> Metadata[Covers and metadata LRU]
     Catalog --> UI[List or tiles]
+    UI --> Edits[Offline metadata outbox]
+    Edits --> Provider
     Books --> Reader[Native KOReader]
     Reader --> Queue[Pending native .sdr sync]
     Queue --> Provider
@@ -89,11 +106,16 @@ Downloaded Lua metadata is parsed as data, never executed. Conflicts preserve bo
 
 All experimental features start **off**:
 
-- **Expanded information header** adds a collapsible cover and short description above the file list.
-- **Chapter thumbnails** unlocks chapter tiles and manual recursive cover scanning. An optional separate switch enables automatic scanning of the home library.
+- **Chapter thumbnails** enables remote CBZ previews and manual recursive cover scanning. File tiles and existing local previews also work with this experiment disabled. An optional separate switch enables automatic scanning of the home library.
 - Remote previews use bounded HTTP ranges to read ZIP32 directories and the first image. Store and Deflate are supported; ZIP64, encrypted, damaged or oversized archives are skipped. No complete remote CBZ is downloaded for a preview, including across combined ranges. Already-cached archives are read locally.
 
 Limits per preview: **1 MiB ZIP directory, 8 MiB transferred, 16 MiB expanded image and 16 megapixels**. Generated images share the metadata LRU. Scanning excludes `.sdr`, supports cancellation and yields to reading. It can use a first-chapter image when no folder cover exists. Preview caches stay local.
+
+## Troubleshooting
+
+**Offline mode**, **Waiting before retry**, **Waiting for the device to wake**, and **Authorization is required** describe different states. Transient network/server failures retain queued downloads while retrying. A damaged preview or local-file error does not pause unrelated network work. In **Downloads and sync**, retry pending tasks or inspect conflicts; use **Recover reading progress…** only to restore a downloaded cloud copy or the last local snapshot, with the document closed.
+
+Optional **Connection and startup → Diagnostics** records sanitized operation/status counters and queue transitions in the data folder `gdriveshelf/logs`, outside plugin code. Logging starts off and retains at most **2 MiB** across two files. File names, IDs, paths, URLs, credentials and response contents are excluded. Export or clear the log from the same screen. Include an exported log and reproduction steps when reporting a fault.
 
 ## Compatibility and development
 
@@ -103,7 +125,7 @@ Google Docs/Sheets/Slides export and a standalone Android background-download se
 
 ```sh
 make test
-make package VERSION=0.1.6
+make package VERSION=0.1.7
 ```
 
 CI checks pull requests and automatically publishes versioned plugin-only archives and SHA-256 checksums on pushes to `master`. Include your KOReader version and reproduction steps in [issues](../../issues), with credentials removed.

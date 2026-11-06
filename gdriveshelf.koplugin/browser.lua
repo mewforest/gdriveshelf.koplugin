@@ -25,6 +25,13 @@ function B.header(o)
  end
  local header=V:new{align='left',titleInput}
  if #o.buttons>0 then header[#header+1]=inset(buttons);header[#header+1]=VS:new{width=gap}end
+ local activity
+ if o.activity then
+  activity=require('ui/widget/button'):new{text=o.activity,width=o.width-2*pad,height=Screen:scaleBySize(32),
+   text_font_face='smallinfofont',text_font_size=16,text_font_bold=false,align='left',avoid_text_truncation=false,
+   bordersize=0,padding_h=Screen:scaleBySize(4),padding_v=0,callback=o.activity_callback}
+  header[#header+1]=inset(activity);header[#header+1]=VS:new{width=gap}
+ end
  for _,bar in ipairs(o.bars or {})do
   local block=V:new{align='left',require('ui/widget/textboxwidget'):new{text=bar.label,width=o.width-2*pad,face=require('ui/font'):getFace('smallinfofont')}}
   if bar.value then
@@ -35,19 +42,24 @@ function B.header(o)
  end
  if o.summary then
   local row=require('ui/widget/horizontalgroup'):new{align='top'}
-  local coverHeight=math.min(o.summary.height,Screen:scaleBySize(104));local coverWidth=math.floor(coverHeight*.68)
+  local coverHeight=math.min(o.summary.height,Screen:scaleBySize(128));local coverWidth=math.floor(coverHeight*.68)
   local textWidth=o.width-2*pad
   if o.summary.cover_path then
    row[#row+1]=require('ui/widget/iconwidget'):new{file=o.summary.cover_path,width=coverWidth,height=coverHeight,scale_factor=0,is_icon=false}
    row[#row+1]=require('ui/widget/horizontalspan'):new{width=gap};textWidth=textWidth-coverWidth-gap
   end
-  row[#row+1]=require('ui/widget/textboxwidget'):new{text=o.summary.text,width=textWidth,face=require('ui/font'):getFace('smallinfofont'),height=o.summary.height,height_overflow_show_ellipsis=true}
+  row[#row+1]=require('ui/widget/textboxwidget'):new{text=o.summary.text,width=textWidth,face=require('ui/font'):getFace('cfont',22),bold=o.summary.bold==true,
+   height=coverHeight,height_adjust=true,height_overflow_show_ellipsis=true}
   header[#header+1]=inset(row);header[#header+1]=VS:new{width=pad}
  end
  header.getHeight=function(h)return h:getSize().h end
  header.setTitle=function(_,text,refresh)title:setTitle(text,refresh)end
  header.setSubTitle=function(_,text,refresh)title:setSubTitle(text,refresh)end
- header.generateVerticalLayout=function()local layout=title:generateVerticalLayout();for _,row in ipairs(buttons.layout or {})do layout[#layout+1]=row end;return layout end
+ header.setActivity=function(_,text)
+  if not activity or text==activity.text then return end
+  activity:setText(text,activity.width);activity:refresh()
+ end
+ header.generateVerticalLayout=function()local layout=title:generateVerticalLayout();for _,row in ipairs(buttons.layout or {})do layout[#layout+1]=row end;if activity then layout[#layout+1]={activity}end;return layout end
  return header
 end
 function B.gridClass(Menu)
@@ -80,13 +92,27 @@ function B.gridClass(Menu)
     if item then
      item.idx=index
      local Text=require('ui/widget/textboxwidget')
-     local label=Text:new{text=item.card_title or item.text or '',face=font,width=contentWidth,height=math.floor(contentHeight*(item.icon_file and .35 or .50)),height_adjust=true,height_overflow_show_ellipsis=true,alignment='center'}
-     local detail=item.card_details and item.card_details~=''and Text:new{text=item.card_details,face=detailFont,width=contentWidth,height=math.floor(contentHeight*.35),height_adjust=true,height_overflow_show_ellipsis=true,alignment='center'}or nil
      local spacer=math.floor(gap/2);local progressHeight=Screen:scaleBySize(3)
+     local badges
+     if item.card_left or item.card_right then
+      local TW=require('ui/widget/textwidget')
+      local left=TW:new{text=item.card_left or '',face=detailFont};local right=TW:new{text=item.card_right or '',face=detailFont}
+      local remaining=contentWidth-left:getSize().w-right:getSize().w
+      if remaining>=gap then
+       badges=H:new{left,HS:new{width=remaining},right}
+      else
+       left:free();right:free()
+       badges=Text:new{text=item.card_fallback or table.concat({item.card_left or '',item.card_right or ''},' · '),face=detailFont,width=contentWidth,
+        height=math.floor(contentHeight*.20),height_adjust=true,height_overflow_show_ellipsis=true,alignment='left'}
+      end
+     end
+     local bodyHeight=contentHeight-(badges and badges:getSize().h+spacer or 0)
+     local label=Text:new{text=item.card_title or item.text or '',face=font,width=contentWidth,height=math.floor(bodyHeight*(item.icon_file and .35 or .50)),height_adjust=true,height_overflow_show_ellipsis=true,alignment='center'}
+     local detail=item.card_details and item.card_details~=''and Text:new{text=item.card_details,face=detailFont,width=contentWidth,height=math.floor(bodyHeight*.35),height_adjust=true,height_overflow_show_ellipsis=true,alignment='center'}or nil
      local textHeight=label:getSize().h+(detail and detail:getSize().h+spacer or 0)+(item.folder_progress~=nil and progressHeight+spacer or 0)
      local body=V:new{align='center'}
      if item.icon_file then
-      local pictureHeight=math.max(1,math.min(math.floor(contentHeight*.65),contentHeight-textHeight-spacer))
+      local pictureHeight=math.max(1,math.min(math.floor(bodyHeight*.65),bodyHeight-textHeight-spacer))
       local picture=require('ui/widget/iconwidget'):new{file=item.icon_file,width=contentWidth,height=pictureHeight,scale_factor=0,is_icon=false,alpha=true}
       body[#body+1]=Center:new{dimen=Geom:new{w=contentWidth,h=pictureHeight},picture}
       body[#body+1]=VS:new{width=spacer}
@@ -97,8 +123,11 @@ function B.gridClass(Menu)
       body[#body+1]=VS:new{width=spacer}
       body[#body+1]=require('ui/widget/progresswidget'):new{width=contentWidth,height=progressHeight,percentage=item.folder_progress,radius=0,bordersize=1,margin_h=0,margin_v=0}
      end
+     local content=V:new{align='left'}
+     if badges then content[#content+1]=badges;content[#content+1]=VS:new{width=spacer}end
+     content[#content+1]=Center:new{dimen=Geom:new{w=contentWidth,h=bodyHeight},body}
      local cell=Cell:new{dimen=Geom:new{w=width,h=height},entry=item,idx=index,menu=m,
-      require('ui/widget/container/framecontainer'):new{padding=inner,margin=0,bordersize=1,Center:new{dimen=Geom:new{w=contentWidth,h=contentHeight},body}}}
+      require('ui/widget/container/framecontainer'):new{padding=inner,margin=0,bordersize=1,Center:new{dimen=Geom:new{w=contentWidth,h=contentHeight},content}}}
      group[#group+1]=cell;focus[#focus+1]=cell
     else group[#group+1]=HS:new{width=width}end
     if x<columns then group[#group+1]=HS:new{width=gap}end

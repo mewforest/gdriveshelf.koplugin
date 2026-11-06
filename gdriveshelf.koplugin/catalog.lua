@@ -32,9 +32,16 @@ function C.due(listing,now,settings)
  return hours>0 and now-(listing.checked_at or 0)>=hours*3600
 end
 function C.stats(core,parent)
- local state=core.state;local count
+ local state=core.state;local count,folders,empty,visible_count
  if (state.listings or {})[parent]and state.listings[parent].complete then
-  count=0;for _,e in ipairs(core:cachedList(parent))do if Library.supported(e)then count=count+1 end end
+  count,folders,visible_count=0,0,0
+  for _,e in ipairs(core:cachedList(parent))do
+   if not require('gdriveshelf/metadata').isService(e)then
+    visible_count=visible_count+1
+    if e.is_folder then folders=folders+1 elseif Library.supported(e)then count=count+1 end
+   end
+  end
+  empty=visible_count==0
  end
  local function belongs(id)
   local seen={};while id and not seen[id]do
@@ -47,7 +54,7 @@ function C.stats(core,parent)
    bytes=bytes+(e.size or 0);downloaded=downloaded+1
   end
  end
- return {count=count,bytes=bytes,downloaded=downloaded}
+ return {count=count,folders=folders,visible_count=visible_count,empty=empty,bytes=bytes,downloaded=downloaded}
 end
 function C.order(entries,mode,reverse,known_first,compare)
  local ordered=Library.ordered(entries,mode,reverse,compare);local groups={{},{},{}}

@@ -33,10 +33,10 @@ H.test('unexpected action failures keep KOReader running and never log error pay
  local diagnostic,notice
  package.loaded.datastorage={getDataDir=function()return '/profile'end}
  package.loaded['ui/widget/infomessage']={new=function(_,o)notice=o.text;return o end}
- p.core={storage={write=function(_,_,text)diagnostic=text;return true end}}
+ p.core={storage={write=function()error('A disabled or bounded logger must replace the old diagnostic file')end},logger={event=function(_,event,fields)diagnostic=event..' '..tostring(fields.module)..' '..tostring(fields.line)end}}
  local broken=p:menu('Test',{{text='Broken action',callback=function()error('demo-sensitive-token-must-not-appear')end}})
  local ok=pcall(broken.onMenuSelect,broken,broken.item_table[1]);assert(ok,'Action exception escaped into KOReader')
- assert(diagnostic and diagnostic:find('test_menu_icons.lua',1,true))
+ assert(diagnostic and diagnostic:find('ui_error',1,true))
  assert(not diagnostic:find('demo-sensitive-token-must-not-appear',1,true))
- assert(notice and notice:find('diagnostic',1,true))
+ assert(notice and notice:lower():find('diagnostic',1,true))
 end)

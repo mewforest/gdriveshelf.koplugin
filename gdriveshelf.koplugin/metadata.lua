@@ -16,7 +16,7 @@ function M.normalize(data,kind)
 end
 function M.isService(e)
  local n=(e.name or ''):lower()
- return n=='cover.jpg' or n=='index.json' or n=='series.json' or (e.is_folder==true and n:match('%.sdr$')~=nil)
+ return n=='cover.jpg' or n=='index.json' or n=='series.json' or n=='gdriveshelf.json' or n:match('^gdriveshelf%-cover%-.+%.png$')~=nil or (e.is_folder==true and n:match('%.sdr$')~=nil)
 end
 function M.visible(entries,show)
  local r={};for _,e in ipairs(entries or {}) do if show or not M.isService(e) then r[#r+1]=e end end;return r

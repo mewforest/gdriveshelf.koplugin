@@ -1,0 +1,37 @@
+{
+  "status": "passed",
+  "elapsed": 72.157945871353,
+  "stage": "done",
+  "checks": [
+    "diagnostics is off by default and performs no log write",
+    "recursive catalog requires confirmation and discovers nested folders before catch-up",
+    "ordinary refresh replays Drive changes without another full catalog walk",
+    "default-on downloaded CBZ EPUB and PDF covers are bounded native background work",
+    "offline cover workers preserve empty and malformed existing native SDR bytes",
+    "stable comic header and local cover grid need no remote beta previews",
+    "temporary API cooldown preserves requests without changing manual offline mode",
+    "sleep and wake preserve both callbacks and resume queued browsing once",
+    "offline native reader and durable progress in doc metadata mode (1)",
+    "offline native reader and durable progress in dir metadata mode (2)",
+    "offline native reader and durable progress in hash metadata mode (3)",
+    "offline native reader and durable progress in dir metadata mode (4)",
+    "native automatic EOF joins existing prefetch with immediate download feedback",
+    "automatic next opens the correct real chapter and never crosses folder boundary",
+    "native EOF popup next action immediately shows foreground download feedback",
+    "native CBZ EPUB and PDF progress uploads only within the disposable child",
+    "fresh conditional native SDR readback preserves EPUB xpointer and paged positions",
+    "visible native SDR cache stores safe snapshots without conditional-write guards",
+    "fresh grouped SDR version recheck downloads zero unchanged Lua",
+    "opt-in diagnostics exports bounded safe fields without URLs IDs filenames or credentials"
+  ],
+  "screenshots": [
+    "reliability-recursive-home.png",
+    "reliability-stable-header-local-grid.png",
+    "reliability-native-cbz.png",
+    "reliability-native-epub.png",
+    "reliability-native-pdf.png",
+    "reliability-automatic-next-feedback.png",
+    "reliability-popup-next-feedback.png",
+    "reliability-final-grid.png"
+  ]
+}

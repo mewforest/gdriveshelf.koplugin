@@ -23,3 +23,8 @@ H.test('refuses requests whose combined ranges would cover an entire small CBZ',
  local data=Z.extract({size=#bytes},function(a,b)received=received+b-a+1;return bytes:sub(a+1,b+1)end)
  assert(not data and received<#bytes)
 end)
+H.test('range failures preserve structured transport errors for retry',function()
+ local network={code='network',status=503,retry_after=9,message='private detail'}
+ local data,why=Z.extract({size=100},function()return nil,network end)
+ assert(not data);H.eq(why,network)
+end)

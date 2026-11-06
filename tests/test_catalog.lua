@@ -1,4 +1,11 @@
 local H=require('tests/helper');local C=require('gdriveshelf/catalog')
+H.test('a container of folders is not an empty reading folder',function()
+ local children={{id='child',name='Volumes',is_folder=true},{id='sdr',name='book.sdr',is_folder=true}}
+ local core={state={listings={p={complete=true}},entries={}},cachedList=function()return children end,storage={exists=function()return true end}}
+ local info=C.stats(core,'p');H.eq(info.count,0);H.eq(info.folders,1);H.eq(info.empty,false)
+ children={};info=C.stats(core,'p');H.eq(info.empty,true)
+ core.state.listings.p=nil;info=C.stats(core,'p');H.eq(info.empty,nil);H.eq(info.count,nil)
+end)
 H.test('mixed history groups only comic files and survives archive eviction',function()
  local state={docs={},folders={p={id='p',name='Title',is_folder=true}},history={},folder_types={}}
  C.recordOpen(state,{id='c1',name='1.cbz',parent_id='p'},10)

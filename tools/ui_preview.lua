@@ -4,7 +4,7 @@
 require('setupkoenv')
 local source=assert(os.getenv('GDRIVESHELF_ROOT'))
 local samples=assert(os.getenv('GDRIVESHELF_SAMPLES'))
-local output=source..'/docs/screenshots/'
+local output=(os.getenv('GDRIVESHELF_OUTPUT')or source..'/docs/screenshots')..'/'
 local language=os.getenv('GDRIVESHELF_LANGUAGE')or 'ru'
 local suffix=language:match('^en')and '-en'or ''
 local LuaSettings=require('luasettings');local DataStorage=require('datastorage')
@@ -47,11 +47,16 @@ for _,e in ipairs(entries)do
  end
 end
 assert(first);c.state.last_document=first.id;c:save()
+-- Prepare an already-downloaded preview locally, without remote beta features.
+local preview=c.storage.root..'/fixture-cover.png'
+local built=assert(require('gdriveshelf/localcovers').build(first,c:cached(first.id),preview))
+c.state.entries['thumb:'..first.id]={id='thumb:'..first.id,path=preview,pool='meta',ready=true,size=built.size,parent_id=first.parent_id,source_stamp=require('gdriveshelf/metadata').fingerprint(first)}
+
 local titleFolders={c.state.folders['demo-title']}
 for i=2,9 do
  local id='demo-folder-'..i;local folder={id=id,parent_id='demo-library',name=(language=='ru'and 'Пример папки 'or 'Example folder ')..i,is_folder=true}
  c.state.folders[id]=folder;titleFolders[#titleFolders+1]=folder
- if i==2 then c:rememberList(id,{})end
+ if i==2 then c:rememberList(id,{})elseif i==3 then c:rememberList(id,{{id='nested-demo',name='Subfolder',is_folder=true,parent_id=id}})end
 end
 c:rememberList('demo-library',titleFolders)
 local function closeAll()
@@ -68,6 +73,7 @@ shelf:showFolder('demo-library');shot('titles');closeAll()
 shelf.settings.folder_view='grid';shelf:showFolder('demo-library');shot('titles-grid');closeAll();shelf.settings.folder_view='list'
 shelf:showLibrary();shot('library');closeAll()
 shelf:showFolderActions('demo-title',true);shot('library-actions');closeAll()
+shelf:folderActions(c.state.folders['demo-title']);shot('folder-context');closeAll()
 shelf:showFileSort();shot('file-sorting');closeAll()
 shelf:showTitleSort();shelf.preview_menu.item_table[3].callback();shot('title-sorting')
 assert(LuaSettings:open(DataStorage:getSettingsDir()..'/gdriveshelf.lua'):readSetting('title_sort')=='read','Title sorting did not persist')
@@ -75,6 +81,10 @@ closeAll()
 shelf:showMemory();shot('storage');closeAll()
 shelf:showSettings();shot('settings');closeAll()
 shelf:showSettingsCategory('catalog');shot('settings-catalog');closeAll()
+shelf:showSettingsCategory('connection');shot('settings-connection');closeAll()
+shelf:showDiagnostics();shot('diagnostics');closeAll()
+shelf:editFolderMetadata('demo-title');shot('metadata-editor');closeAll()
+shelf:showRecovery(first);shot('progress-recovery');closeAll()
 shelf:showSettingsCategory('reading');shot('settings-reading');closeAll()
 shelf:showSettingsCategory('experimental');shot('settings-experimental');closeAll()
 shelf:showSettings();
@@ -86,6 +96,9 @@ shelf:showOffline();shot('offline');closeAll()
 shelf:showInfo('demo-title');shot('manga-info');closeAll()
 local cover=c:titleInfo('demo-title').cover_path
 assert(cover);UI:show(require('ui/widget/imageviewer'):new{file=cover,title_text='Лунная линия',with_title_bar=true});shot('cover');closeAll()
+shelf.settings.file_view='grid';shelf:showFolder('demo-title');shot('chapters-stable');closeAll();shelf.settings.file_view='list'
+c.state.downloads['demo-transfer']={entry={id='demo-transfer',parent_id='demo-title',name=language=='ru'and 'Следующая глава.cbz'or 'Next chapter.cbz',size=8388608},pool='auto'}
+c.transfer={['demo-transfer']={received=2097152,total=8388608}};shelf:showFolder('demo-title');shot('background-download');shelf:showQueue();shot('download-queue');closeAll();c.state.downloads={};c.transfer={}
 print('PASS all principal GDriveShelf widgets rendered from real local manga fixtures')
 -- Open through the same tap handler used in the plugin, then turn a native page.
 shelf:openLastDocument()

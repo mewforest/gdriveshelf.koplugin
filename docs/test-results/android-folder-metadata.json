@@ -1,0 +1,10 @@
+{
+  "checks": [
+    "offline folder title description and cover survive protected-store reload without network",
+    "online metadata flush publishes immutable cover before its own schema-1 JSON pointer",
+    "concurrent folder metadata preserves both local and remote versions before an explicit choice",
+    "explicit local resolution updates the same JSON with a fresh conditional guard and preserves the remote values"
+  ],
+  "stage": "done",
+  "status": "passed"
+}

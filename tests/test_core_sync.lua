@@ -35,6 +35,6 @@ H.test('backoff also prevents already queued jobs starting network work',functio
  local c,_,finish,cloud=harness(nil,nil);local second
  c:network('fail',function()return nil,{code='network',message='offline'}end,function()end)
  c:network('later',function()error('must not run')end,function(_,err)second=err end)
- finish();local _,starts=cloud();H.eq(starts,1);H.eq(second.code,'paused')
+ finish();local _,starts=cloud();H.eq(starts,1);H.eq(second,nil);assert(c.jobs.keys.fail and c.jobs.keys.later and #c.jobs.queue==2)
 end)
 print('core sync integration tests passed')

@@ -13,6 +13,10 @@ return function(Shelf,env)
   if s.load_covers==nil then s.load_covers=true end
   if s.load_metadata==nil then s.load_metadata=true end
   if s.index_hours==nil then s.index_hours=24 end
+  if s.info_header==nil then s.info_header=true end
+  if s.local_covers==nil then s.local_covers=true end
+  if s.hide_empty==nil then s.hide_empty=true end
+  if s.index_enabled and not s.index_recursive_confirmed then s.index_enabled=false;s.index_needs_confirmation=true end
   return s
  end
  function Shelf:onDispatcherRegisterActions()
@@ -69,13 +73,13 @@ return function(Shelf,env)
     cardTitle=(e.pinned and '★ 'or '')..cardTitle
     if e.stats then
      local details={}
-     if e.stats.count~=nil then details[#details+1]=e.stats.count==0 and tr('Empty folder')or string.format(tr('%d files'),e.stats.count)end
+     if e.stats.empty then details[#details+1]=tr('Empty folder')else
+      if e.stats.folders and e.stats.folders>0 then details[#details+1]=string.format(tr('%d folders'),e.stats.folders)end
+      if e.stats.count and e.stats.count>0 then details[#details+1]=string.format(tr('%d files'),e.stats.count)end
+     end
      if e.stats.bytes>0 then details[#details+1]=tr('Downloaded')..': '..env.bytes(e.stats.bytes)end
      if #details>0 then name=name..'\n'..table.concat(details,' · ')end
-     local compact={}
-     if e.stats.count~=nil then compact[#compact+1]=e.stats.count==0 and tr('Empty folder')or string.format(tr('%d files'),e.stats.count)end
-     if e.stats.bytes>0 then compact[#compact+1]='✓ '..env.bytes(e.stats.bytes)end
-     cardDetails=table.concat(compact,'\n')
+     cardDetails=e.stats.empty and tr('Empty folder')or nil
     end
    else
     if self.selection then name=(self.selection[e.id]and '☑ 'or '☐ ')..name
@@ -83,35 +87,66 @@ return function(Shelf,env)
     if summary and summary.percent then name=name..string.format(' · %d%%',math.floor(summary.percent*100+.5))end
     cardTitle=name
    end
-   local thumb=self.settings.beta_thumbnails and not e.is_folder and self.core:thumbnail(e)
-   local cover=e.is_folder and e.cover_path or (self.settings.beta_thumbnails and thumb and self.core.storage:exists(thumb.path)and thumb.path or nil)
-   rows[#rows+1]={text=name,card_title=cardTitle,card_details=cardDetails,entry=e,icon=e.is_folder and 'appbar.filebrowser'or 'appbar.pageview',icon_file=cover,cover=cover~=nil,folder_progress=e.folder_progress,
+   local thumb=not e.is_folder and((self.core.localCover and self.core:localCover(e))or(self.core.thumbnail and self.core:thumbnail(e)))
+   local cover=e.is_folder and e.cover_path or (thumb and self.core.storage:exists(thumb.path)and thumb.path or nil)
+   local stats=e.stats or {};local left=e.is_folder and stats.bytes and stats.bytes>0 and env.bytes(stats.bytes)or nil
+   local right=e.is_folder and ((stats.count and stats.count>0 and tostring(stats.count))or(stats.folders and stats.folders>0 and string.format(tr('%d folders'),stats.folders)))or (not e.is_folder and e.size and env.bytes(e.size))or nil
+   if not(e.is_folder and self.settings.hide_empty~=false and stats.empty==true)then
+   rows[#rows+1]={text=name,card_title=cardTitle,card_details=cardDetails,card_left=left,card_right=right,card_fallback=left and tr('Cache')..': '..left..(right and ' · '..right or '')or right,mandatory=not e.is_folder and e.size and env.bytes(e.size)or nil,entry=e,icon=e.is_folder and 'appbar.filebrowser'or 'appbar.pageview',icon_file=cover,cover=cover~=nil,folder_progress=e.folder_progress,
     callback=function()
      if self.selection and not e.is_folder then self.selection[e.id]=not self.selection[e.id];self:refreshBrowser()
      elseif e.is_folder then self:showFolder(e.id,offline)
      elseif Library.supported(e)then self:openEntry(e)else self:fileActions(e)end
     end,hold_callback=function()if e.is_folder then self:folderActions(e)else self:fileActions(e)end end}
+   end
   end
   if #rows==0 then
    local state=(self.core.state.listings or {})[parent]
-   local text=self.browser_error and tr('Could not load this folder')or (self.browser_loading and tr('Loading folder…')or (state and state.complete and tr('This folder is empty')or tr('Folder contents are not cached')))
+   local text=self.browser_error and tr('Could not load this folder')or (self.browser_loading and tr('Loading folder…')or (state and state.complete and tr(#Metadata.visible(entries,self.settings.show_service)>0 and 'No items match the display settings'or 'This folder is empty')or tr('Folder contents are not cached')))
    rows[1]={text=text,select_enabled=false}
   end
   return rows
  end
  function Shelf:browserStatus()
   if self.browser_error then return tr('Could not load this folder')end
-  local parts={};if self.browser_loading then parts[#parts+1]=tr('Loading folder…')end
+  local parts={};local state=self.core.networkState and self.core:networkState()or'online'
+  local labels={offline='Offline mode',sleep='Waiting for the device to wake',retry='Waiting before retry',auth='Authorization is required'}
+  if labels[state]then parts[#parts+1]=tr(labels[state])end
+  if self.core.progress_job and self.core.progress_job.parent_id==self.folder_id then parts[#parts+1]=tr('Loading reading progress…')end
+  if self.browser_loading then parts[#parts+1]=tr('Loading folder…')end
   if self.core.index_job then local j=self.core.index_job;parts[#parts+1]=string.format(tr('Indexing folders: %d/%d'),j.done,j.total)end
   if self.core.deep_job then parts[#parts+1]=tr('Scanning covers…')end
   for _,d in pairs(self.core.state.downloads)do if d.entry.parent_id==self.folder_id and d.pool=='meta'then parts[#parts+1]=d.entry.name:lower()=='cover.jpg'and tr('Loading cover…')or tr('Loading information…');break end end
   if #parts==0 then parts[1]=self.folder_offline and tr('Available offline')or 'Google Drive Shelf'end
   return table.concat(parts,' · ')
  end
- function Shelf:refreshBrowser()
+ function Shelf:browserPresentation(parent,entries)
+  local info=self.core:titleInfo(parent);local folder=self.core.state.folders[parent]or{id=parent,name=parent,is_folder=true}
+  local hasFolders,comic=false,false;local kind=(self.core.state.folder_types or {})[parent]
+  for _,e in ipairs(entries or {})do
+   if e.is_folder and not Metadata.isService(e)then hasFolders=true end
+   if not e.is_folder and Library.supported(e)and Catalog.kind(e,self.core.state)=='comics'then comic=true end
+  end
+  if kind=='comics'then comic=true elseif kind=='books'then comic=false end
+  local grid=(hasFolders and self.settings.folder_view=='grid')or(not hasFolders and self.settings.file_view=='grid')
+  local header=self.settings.info_header~=false and comic and not self.header_collapsed
+  local signature=table.concat({tostring(parent),tostring(folder.parent_id),info.title or folder.name,header and(info.cover_path or '')or '',tostring(header),tostring(grid),tostring(hasFolders),tostring(self:downloadActivity()~=nil)},'|')
+  return {info=info,folder=folder,hasFolders=hasFolders,comic=comic,grid=grid,header=header,signature=signature}
+ end
+ function Shelf:refreshBrowser(statusOnly)
   local m=self.folder_menu;if not m or m._closed then return end
-  if m.title_bar then m.title_bar:setSubTitle(self:browserStatus(),true)end
-  -- Preserve item order during background indexing, then regroup once complete.
+  if m.title_bar then
+   m.title_bar:setSubTitle(self:browserStatus(),true)
+   if m.title_bar.setActivity then m.title_bar:setActivity(self:downloadActivity())end
+  end
+  if statusOnly then
+   local activity=self:downloadActivity()~=nil
+   if self.browser_activity_present~=activity then self:showFolder(self.folder_id,self.folder_offline,false,true)end
+   return
+  end
+  local view=self:browserPresentation(self.folder_id,self.folder_entries or {})
+  if self.browser_header_signature~=view.signature then self:showFolder(self.folder_id,self.folder_offline,false,true);return end
+  -- Keep cards stationary during a discovery pass; regroup once it finishes.
   local rows=self:folderRows(self.folder_id,self.folder_entries or {},self.folder_offline)
   if self.core.index_job and m.item_table then
    local rank={};for i,row in ipairs(m.item_table)do if row.entry then rank[row.entry.id]=i end end
@@ -127,9 +162,8 @@ return function(Shelf,env)
   if self.folder_id~=parent then self.selection=nil end
   self.folder_id,self.folder_offline=parent,offline;self.browser_error=nil;self.browser_loading=not offline and not render_only and core:online()
   self.folder_entries=offline and self:offlineChildren(parent)or core:cachedList(parent)
-  local folder=core.state.folders[parent]or {id=parent,name=parent,is_folder=true};local info=core:titleInfo(parent)
-  local hasFolders=false;for _,e in ipairs(self.folder_entries)do if e.is_folder and not Metadata.isService(e)then hasFolders=true;break end end
-  local grid=(hasFolders and self.settings.folder_view=='grid')or(not hasFolders and self.settings.beta_thumbnails and self.settings.file_view=='grid')
+  local view=self:browserPresentation(parent,self.folder_entries);local folder,info,hasFolders,grid=view.folder,view.info,view.hasFolders,view.grid
+  self.browser_header_signature=view.signature;self.browser_activity_present=self:downloadActivity()~=nil;core.catalog_visible=true
   local function action(fn)return function()self:runAction(fn)end end
   local buttons={
    {icon='home',callback=action(function()self:showLibrary()end)},
@@ -138,19 +172,19 @@ return function(Shelf,env)
    {icon_file=env.root..'/resources/icons/actions.svg',callback=action(function()self:showFolderActions(parent,offline)end)},
    {icon='info',callback=action(function()self:showInfo(parent)end)},
   }
-  if hasFolders or self.settings.beta_thumbnails then table.insert(buttons,4,{icon_file=env.root..'/resources/icons/'..(grid and 'list'or 'grid')..'.svg',callback=action(function()
+  table.insert(buttons,4,{icon_file=env.root..'/resources/icons/'..(grid and 'list'or 'grid')..'.svg',callback=action(function()
    local key=hasFolders and 'folder_view'or 'file_view';self.settings[key]=grid and 'list'or 'grid';self:saveSettings();self:showFolder(parent,offline)
-  end)})end
+  end)})
   for _,button in ipairs(buttons)do if button.icon_file then button.icon='appbar.pageview'end end
   local summary
-  if self.settings.beta_header and not self.header_collapsed and (info.cover_path or info.description)then
-   summary={cover_path=info.cover_path,text=(info.title or folder.name)..(info.author and '\n'..info.author or '')..'\n'..(info.description or ''):sub(1,260),height=math.floor(require('device').screen:getHeight()*.16)}
+  if view.header then
+   summary={cover_path=info.cover_path,text=info.title or folder.name,bold=true,height=math.floor(require('device').screen:getHeight()*.16)}
   end
   local width=require('device').screen:getWidth()
-  local header=require('gdriveshelf/browser').header{width=width,title=info.title or folder.name,status=self:browserStatus(),buttons=buttons,summary=summary,
+  local header=require('gdriveshelf/browser').header{width=width,title=info.title or folder.name,status=self:browserStatus(),buttons=buttons,summary=summary,activity=self:downloadActivity(),activity_callback=action(function()self:showQueue()end),
    back=action(function()if folder.parent_id then self:showFolder(folder.parent_id,offline)else close(self.folder_menu)end end),
-   close=function()close(self.folder_menu)end,info=action(function()self:showInfo(parent)end)}
-  local menu=self:menu(info.title or folder.name,self:folderRows(parent,self.folder_entries,offline),{icons=not grid,grid=grid,header=header,perpage=grid and 9 or 7,multiline=true,lazy=not offline})
+   close=function()core.catalog_visible=false;close(self.folder_menu)end,info=action(function()self:showInfo(parent)end)}
+  local menu=self:menu(info.title or folder.name,self:folderRows(parent,self.folder_entries,offline),{icons=not grid,grid=grid,header=header,perpage=grid and 9 or 7,multiline=true,lazy=true,parent_enabled=folder.parent_id~=nil,close=function()core.catalog_visible=false end})
   self.folder_menu=menu
   menu.onClose=function()if folder.parent_id then self:showFolder(folder.parent_id,offline)else menu:onCloseAllMenus()end;return true end
   menu.onReturn=function()if folder.parent_id then self:showFolder(folder.parent_id,offline)else menu:onCloseAllMenus()end;return true end
@@ -159,11 +193,13 @@ return function(Shelf,env)
    if self.folder_menu~=menu or menu._closed then return end
    if not cached then self.browser_loading=false;self.browser_error=err end
    if entries then
+    if not cached then self.folder_generation=(self.folder_generation or 0)+1 end
     self.folder_entries=entries
     local nowHasFolders=false;for _,e in ipairs(entries)do if e.is_folder and not Metadata.isService(e)then nowHasFolders=true;break end end
     if not cached and nowHasFolders~=hasFolders then self:showFolder(parent,offline,false,true);return end
    end;self:refreshBrowser()
   end,force)end
+  if core.catalogRefresh and not offline and not render_only then core:catalogRefresh(force)end
   return menu
  end
  function Shelf:showBrowserSort()
@@ -206,7 +242,10 @@ return function(Shelf,env)
     local choices={};for _,kind in ipairs{'auto','comics','books'}do local value=kind;choices[#choices+1]={text=tr(value),callback=function()owner.core.state.folder_types[folder.id]=value;owner.core:save()end}end
     owner:menu(tr('Content type'),choices)
    end}
-   if owner.settings.beta_header then rows[#rows+1]={icon='info',text=tr('Expand/collapse information header'),callback=function()owner.header_collapsed=not owner.header_collapsed;owner:showFolder(owner.folder_id,owner.folder_offline)end}end
+   if owner.settings.info_header~=false then rows[#rows+1]={icon='info',text=tr('Expand/collapse information header'),callback=function()owner.header_collapsed=not owner.header_collapsed;owner:showFolder(owner.folder_id,owner.folder_offline)end}end
+   rows[#rows+1]={icon='edit',text=tr('Edit folder information'),callback=function()owner:editFolderMetadata(folder)end}
+   rows[#rows+1]={icon='appbar.pageview',text=tr('Cover from first document (beta)'),callback=function()owner:extractCoverForEditor(folder)end}
+   if owner.core.metadataConflict and owner.core:metadataConflict(folder)then rows[#rows+1]={icon='info',text=tr('Folder metadata conflict'),callback=function()owner:showMetadataConflict(folder)end}end
    if owner.settings.beta_thumbnails then rows[#rows+1]={icon='appbar.pageview',text=tr('Deep scan covers (beta)'),callback=function()if not owner.core:deepScan(folder)then env.message(tr('Go online to scan covers.'))end end}end
    local icons={'home','move.down','close','info'};for i,row in ipairs(rows)do row.icon=row.icon or icons[(i-2)%4+1]end
    return original(owner,title,rows,{icons=true})
@@ -266,7 +305,11 @@ return function(Shelf,env)
  end
  local oldChange=Shelf.onCoreChange
  function Shelf:onCoreChange(kind,entry,err)
-  if self.folder_menu and not self.folder_menu._closed then self:refreshBrowser()end
+  if self.folder_menu and not self.folder_menu._closed then
+   if kind=='indexed'and not self.folder_offline then self.folder_entries=self.core:cachedList(self.folder_id)end
+   self:refreshBrowser(kind=='transfer'or kind=='network_state'or kind=='queued')
+  end
+  if self.queue_menu and not self.queue_menu._closed then self:showQueue()end
   local d=self.download_dialog
   if kind=='transfer'and d and entry and entry.id==d.entry.id then
    local value=(self.core.transfer or {})[entry.id]
@@ -313,6 +356,7 @@ return function(Shelf,env)
      if id~='root'and not id:match('^[%w_-]+$')then return false,tr('Invalid folder ID')end;s.home=id;self:saveSettings();return true
     end)end},
     {icon='home',text=tr('Start with Google Drive Shelf'),callback=function()require('gdriveshelf/integration').chooseStartup(self)end},
+    {icon='info',text=tr('Diagnostics'),callback=function()self:showDiagnostics()end},
     {icon='appbar.navigation',text=tr('Gesture shortcuts'),callback=function()env.message(tr('In KOReader gesture settings, choose General → Google Drive Shelf: open home folder, history, or current document folder.'))end},
    }
   elseif category=='catalog'then
@@ -323,12 +367,12 @@ return function(Shelf,env)
     {text=tr('Folder view')..': '..tr(s.folder_view or 'list'),callback=function()s.folder_view=s.folder_view=='grid'and 'list'or 'grid';self:saveSettings();self:showSettingsCategory(category)end},
    }
    toggle('known_first','Show known folders first');toggle('load_covers','Download folder covers');toggle('load_metadata','Download descriptive metadata');toggle('show_service','Show service files')
-   toggle('index_enabled','Index home folder',function()if s.index_enabled then self.core:indexHome()else self.core:cancelIndex()end end)
-   rows[#rows+1]={text=tr('Recheck folders')..': '..(s.index_hours==0 and tr('Disabled')or tostring(s.index_hours)..' '..tr('hours')),callback=function()
-    local choices={};for _,hours in ipairs{0,1,6,24,72,168}do local value=hours;choices[#choices+1]={text=hours==0 and tr('Disabled')or tostring(hours)..' '..tr('hours'),callback=function()s.index_hours=value;self:saveSettings()end}end
-    self:menu(tr('Recheck folders'),choices)
-   end}
-   rows[#rows+1]={icon='cre.render.reload',text=tr('Refresh home catalog now'),callback=function()self:showFolder(s.home,false,true)end}
+   toggle('hide_empty','Hide empty folders');toggle('info_header','Comic folder information header');toggle('local_covers','Create covers for downloaded documents')
+   rows[#rows+1]=checked(s,'index_enabled','Index home folder recursively',function()
+    if s.index_enabled then s.index_enabled=false;self.core:cancelIndex();self:saveSettings();self:showSettingsCategory(category)else self:enableRecursiveIndex()end
+   end)
+   rows[#rows+1]={icon='cre.render.reload',text=tr('Refresh home catalog now'),callback=function()self:showFolder(s.home or 'root',false,true)end}
+   rows[#rows+1]={icon='cre.render.reload',text=tr('Reindex library'),callback=function()self:reindexLibrary()end}
   elseif category=='downloads'then
    title='Downloads and storage'
    rows={
@@ -348,9 +392,11 @@ return function(Shelf,env)
   elseif category=='experimental'then
    title='Experimental'
    rows[#rows+1]={text=tr('Beta features are optional. Cover scanning uses network, battery and metadata-cache space. Unsupported archives are skipped; complete remote CBZ downloads are never used for thumbnails.'),select_enabled=false}
-   toggle('beta_header','Expanded information header (beta)')
    toggle('beta_thumbnails','Chapter thumbnails (beta)',function()if not s.beta_thumbnails then s.beta_auto_scan=false;if self.core.cancelDeepScan then self.core:cancelDeepScan()end end end)
    toggle('beta_auto_scan','Automatically deep scan home (beta)',function()if not s.beta_auto_scan and self.core.cancelDeepScan then self.core:cancelDeepScan()end;if s.beta_auto_scan then s.beta_thumbnails=true;if self.core.deepScan then self.core:deepScan({id=s.home,name=s.home},true)end end end)
+   rows[#rows+1]={text=tr('Automatic scan interval')..': '..tostring(s.index_hours or 24)..' '..tr('hours'),callback=function()
+    local choices={};for _,hours in ipairs{1,6,24,72,168}do local value=hours;choices[#choices+1]={text=tostring(hours)..' '..tr('hours'),callback=function()s.index_hours=value;self:saveSettings()end}end;self:menu(tr('Automatic scan interval'),choices)
+   end}
   end
   return self:menu(tr(title or category),rows,{icons=true,multiline=true})
  end
@@ -387,6 +433,11 @@ return function(Shelf,env)
    local menu=original(owner,title,rows,{header=header,perpage=7,multiline=true});owner.memory_menu=menu;return menu
   end
   local ok,err=xpcall(function()oldMemory(self)end,debug.traceback);self.menu=original;if not ok then error(err)end
+ end
+ local oldResume=Shelf.onResume
+ function Shelf:onResume(...)
+  if oldResume then oldResume(self,...)end
+  if self.core and self.core.catalog_visible and self.core.catalogRefresh then self.core:catalogRefresh(false)end
  end
  local oldInit=Shelf.init
  function Shelf:init()

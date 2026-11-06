@@ -29,24 +29,17 @@ local function problem(e)message(tr(type(e)=='table' and (e.message or e.code) o
 local function stamp(e)return {id=e.id,version=e.version,checksum=e.checksum,modified_time=e.modified_time}end
 local function sameBook(a,b)return SDR.sameBook(a,b)end
 function Shelf:runAction(callback,...)
- local args={...};local storage=self.core and self.core.storage
+ local args={...}
  local ok,a,b=xpcall(function()return callback(unpack(args))end,function(err)
   -- Record code locations, never the error payload: a JSON parser or third-party
   -- module could include credentials or private filenames in its error text.
-  local lines={'GDriveShelf unexpected action error','Runtime: '..jit.os..' '..jit.arch,'Error type: '..type(err)}
+  local logger=self.core and self.core.logger
   for level=2,24 do
    local info=debug.getinfo(level,'nSl');if not info then break end
-   local name=(info.short_src or '?'):match('([^/\\]+)$')or '?'
-   name=name:gsub('[^%w_.-]','_')
-   local func=(info.name or '?'):gsub('[^%w_.:-]','_')
-   lines[#lines+1]=name..':'..tostring(info.currentline)..' '..func
+   local name=(info.source or ''):match('gdriveshelf%.koplugin/(.+)%.lua$')
+   if name and logger then logger:event('ui_error',{module=name,line=info.currentline})end
   end
-  pcall(function()
-   local f=io.open(pluginRoot..'/PACKAGE_VERSION','rb')
-   if f then lines[#lines+1]='Version: '..(f:read(64)or ''):gsub('[^%w_.+-]','');f:close()end
-   if storage then storage:write(require('datastorage'):getDataDir()..'/gdriveshelf-diagnostic.log',table.concat(lines,'\n')..'\n')end
-  end)
-  return tr("GDriveShelf could not complete this action. KOReader is still running. See gdriveshelf-diagnostic.log in the KOReader data folder.")
+  return tr("Google Drive Shelf could not complete this action. KOReader is still running. Diagnostics are available in Connection and startup.")
  end)
  if not ok then pcall(problem,a);return false,a end
  return a,b
@@ -104,6 +97,12 @@ function Shelf:getCore()
   shared.core=Core.new{storage=storage,jobs=jobs,current_path=self.ui.document and self.ui.document.file,credentials=credentials,settings=self.settings,
    provider_factory=function(c)return provider.new{credentials=c,ca_file=pluginRoot..'/cacert.pem'}end,
    onchange=function(kind,entry,e)for owner in pairs(shared.owners)do owner:onCoreChange(kind,entry,e)end end}
+  local logdir=require('datastorage'):getDataDir()..'/gdriveshelf/logs'
+  if self.settings.diagnostics then storage:mkdir(logdir)end
+  local version='0.0.0-dev';local vf=io.open(pluginRoot..'/PACKAGE_VERSION','rb')
+  if vf then version=(vf:read(64)or version):gsub('%s+$','');vf:close()end
+  shared.core.logger=require('gdriveshelf/diagnostics').new{dir=logdir,enabled=function()return self.settings.diagnostics==true end,version=version,runtime=jit.os..' '..jit.arch}
+  jobs.logger=shared.core.logger
   shared.core.oncredentials=function(c)if not privateJSON(shared.settings_dir..'/gdriveshelf-credentials.json',c)then message(tr("Could not save refreshed credentials"))end end
   local BookList=require('ui/widget/booklist')
   shared.core.natural=Library.nativeComparator(BookList.collates.natural)
@@ -144,14 +143,26 @@ function Shelf:menu(title,rows,options)
    return require('ui/widget/container/centercontainer'):new{dimen=dimen,picture}
   end}
  end
+ if options.parent_enabled~=nil then
+  local update=MenuClass.updatePageInfo
+  MenuClass=MenuClass:extend{updatePageInfo=function(m,...)
+   if update then update(m,...)end
+   if m.page_return_arrow then m.page_return_arrow:showHide(options.parent_enabled);m.page_return_arrow:enableDisable(options.parent_enabled)end
+  end}
+ end
  menu=MenuClass:new{title=title,item_table=rows,width=Device.screen:getWidth(),height=Device.screen:getHeight(),
   custom_title_bar=options.header,grid_columns=options.columns,is_enable_shortcut=options.icons==true and not options.grid,is_borderless=true,is_popout=false,items_per_page=options.perpage,multilines_forced=options.multiline,
-  close_callback=function()menu._closed=true;if self.folder_menu==menu then self.folder_menu=nil end;if options.close then options.close()end end}
+  close_callback=function()
+   menu._closed=true
+   if self.folder_menu==menu then self.folder_menu=nil;if self.core and self.core.cancelProgress then self.core:cancelProgress()end end
+   if options.close then options.close()end
+  end}
  menu.onMenuSelect=function(_,item)if item.callback and item.select_enabled~=false then self:runAction(item.callback)end;return true end
  menu.onMenuHold=function(_,item)if item.hold_callback then self:runAction(item.hold_callback)end;return true end
+ menu._shelf_lazy=options.lazy
  if options.lazy then
   local original=menu.onGotoPage
-  menu.onGotoPage=function(m,page)local result=original(m,page);m._lazy_page=nil;self:visibleProgress(m);return result end
+  menu.onGotoPage=function(m,page)local result=original(m,page);self:visibleProgress(m);return result end
  end
  ui():show(menu)
  if options.lazy then self:visibleProgress(menu)end
@@ -162,15 +173,23 @@ function Shelf:replaceMenu(menu,rows,title)
  local page=menu.page or 1
  menu:switchItemTable(title or menu.title,rows)
  menu.page=math.max(1,math.min(page,menu.page_num or 1));menu:updateItems(1,true)
+ if menu._shelf_lazy then self:visibleProgress(menu)end
 end
 function Shelf:visibleProgress(menu)
- if menu._closed or menu._lazy_page==menu.page then return end
- menu._lazy_page=menu.page
+ if menu._closed then return end
  local entries={};local first=((menu.page or 1)-1)*(menu.perpage or 14)+1
+ local signature={tostring(menu.page),tostring(self.folder_generation or 0)}
  for i=first,math.min(#menu.item_table,first+(menu.perpage or 14)-1)do
-  local entry=menu.item_table[i].entry;if entry and not entry.is_folder then entries[#entries+1]=entry end
+  local entry=menu.item_table[i].entry;if entry and not entry.is_folder then
+   entries[#entries+1]=entry;signature[#signature+1]=entry.id..':'..tostring(entry.version or entry.modified_time or '')
+  end
  end
- if #entries>0 then self.core:lazyProgress(entries)end
+ signature=table.concat(signature,'|');if menu._lazy_signature==signature then return end
+ menu._lazy_signature=signature
+ if #entries>0 then
+  if self.core.ensureLocalCovers then self.core:ensureLocalCovers(entries)end
+  self.core:lazyProgress(entries)
+ elseif self.core.cancelProgress then self.core:cancelProgress()end
 end
 function Shelf:hasCredentials()
  local c=self.core and self.core.credentials or {}
@@ -315,20 +334,16 @@ function Shelf:fileActions(entry)
   {text=tr("Remove local download"),callback=function()
    ui():show(self:confirmation{text=tr("Remove the local file? Reading progress will be kept."),ok_text=tr("Remove"),ok_callback=function()local ok,e=self.core:removeFile(entry.id);if not ok then problem(e)end end})
   end},
-  {text=tr("Apply cached cloud progress"),callback=function()
-   if not cached then message(tr("Download the book first"));return end
-   local remote=self.core:remote(entry)
-   ui():show(self:confirmation{text=tr("Apply the cached cloud progress? Close the book first."),ok_text=tr("Apply"),ok_callback=function()local ok,e=self:applyRemote(entry,remote,cached.path);if not ok then problem(e)else message(tr("Progress applied. Open the book to continue."))end end})
-  end},
-  {text=tr("Restore a local snapshot"),callback=function()self:restoreSnapshot(entry)end},
+  {text=tr("Recover reading progress"),callback=function()self:showRecovery(entry)end},
   {text=tr("Information"),callback=function()self:showInfo(entry.parent_id)end},
  })
 end
 function Shelf:showInfo(parent)
  local info=self.core:titleInfo(parent);local text={info.title or parent}
  for _,key in ipairs{'author','status','tags','publisher','year','description'}do if info[key]and info[key]~=''then text[#text+1]=tostring(info[key])end end
- local buttons={}
- if info.cover_path then buttons[1]={{text=tr("Cover"),callback=function()ui():show(require('ui/widget/imageviewer'):new{file=info.cover_path,title_text=info.title or tr("Cover"),with_title_bar=true})end}}end
+ local folder=self.core.state.folders[parent]or{id=parent,name=info.title or parent,is_folder=true}
+ local buttons={{{text=tr("Edit folder information"),callback=function()self:editFolderMetadata(folder)end}}}
+ if info.cover_path then buttons[#buttons+1]={{text=tr("Cover"),callback=function()ui():show(require('ui/widget/imageviewer'):new{file=info.cover_path,title_text=info.title or tr("Cover"),with_title_bar=true})end}}end
  ui():show(require('ui/widget/textviewer'):new{title=tr("Information"),text=table.concat(text,'\n\n'),buttons_table=#buttons>0 and buttons or nil,add_default_buttons=true})
 end
 function Shelf:showMemory()
@@ -531,8 +546,9 @@ end
 function Shelf:onGDriveShelfNext()
  return self:advanceChapter()
 end
-function Shelf:onNetworkConnected()if self.core and not self.settings.offline then self.core.retry_after=nil;self.core:resume()end end
-function Shelf:onSuspend()if self.core then self.core.sleeping=true;self.core.jobs:setOffline(true)end end
-function Shelf:onResume()if self.core then self.core.sleeping=false;self.core.jobs:setOffline(self.settings.offline==true);self:onNetworkConnected()end end
+function Shelf:onNetworkConnected()if self.core and not self.settings.offline then self.core:resetNetwork()end end
+function Shelf:onSuspend()if self.core then self.core:suspend()end end
+function Shelf:onResume()if self.core then self.core:wake()end end
 require('gdriveshelf/ux')(Shelf,{shared=shared,root=pluginRoot,bytes=bytes,message=message,problem=problem})
+require('gdriveshelf/controls')(Shelf,{shared=shared,root=pluginRoot,bytes=bytes,message=message,problem=problem})
 return Shelf
