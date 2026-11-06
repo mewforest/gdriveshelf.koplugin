@@ -103,7 +103,7 @@ Google Docs/Sheets/Slides export and a standalone Android background-download se
 
 ```sh
 make test
-make package VERSION=0.1.5
+make package VERSION=0.1.6
 ```
 
 CI checks pull requests and automatically publishes versioned plugin-only archives and SHA-256 checksums on pushes to `master`. Include your KOReader version and reproduction steps in [issues](../../issues), with credentials removed.

@@ -2,9 +2,13 @@
 local B={}
 function B.header(o)
  local V=require('ui/widget/verticalgroup');local Title=require('ui/widget/titlebar')
+ local Screen=require('device').screen;local pad=Screen:scaleBySize(12);local gap=Screen:scaleBySize(8)
+ local Frame=require('ui/widget/container/framecontainer');local VS=require('ui/widget/verticalspan')
+ local function inset(widget)return Frame:new{padding=0,padding_left=pad,padding_right=pad,bordersize=0,widget}end
  local title=Title:new{title=o.title,subtitle=o.status,left_icon='chevron.left',left_icon_tap_callback=o.back,close_callback=o.close,
   title_hold_callback=o.info,width=o.width}
- local buttons=require('ui/widget/buttontable'):new{width=o.width,buttons={o.buttons},zero_sep=true}
+ for _,button in ipairs(o.buttons)do button.icon_width=Screen:scaleBySize(22);button.icon_height=Screen:scaleBySize(22);button.height=Screen:scaleBySize(44)end
+ local buttons=require('ui/widget/buttontable'):new{width=o.width-2*pad,buttons={o.buttons}}
  for index,entry in ipairs(o.buttons)do if entry.icon_file then
   local button=buttons.buttons_layout[1][index]
   if button then
@@ -20,16 +24,25 @@ function B.header(o)
   titleInput.onShelfInfo=function()o.info();return true end
  end
  local header=V:new{align='left',titleInput}
- if #o.buttons>0 then header[#header+1]=buttons end
+ if #o.buttons>0 then header[#header+1]=inset(buttons);header[#header+1]=VS:new{width=gap}end
  for _,bar in ipairs(o.bars or {})do
-  header[#header+1]=require('ui/widget/textboxwidget'):new{text=bar.label,width=o.width-32,face=require('ui/font'):getFace('smallinfofont')}
-  if bar.value then header[#header+1]=require('ui/widget/progresswidget'):new{width=o.width-32,height=14,percentage=bar.value,radius=0,bordersize=1,margin_h=1,margin_v=1}end
+  local block=V:new{align='left',require('ui/widget/textboxwidget'):new{text=bar.label,width=o.width-2*pad,face=require('ui/font'):getFace('smallinfofont')}}
+  if bar.value then
+   block[#block+1]=VS:new{width=Screen:scaleBySize(4)}
+   block[#block+1]=require('ui/widget/progresswidget'):new{width=o.width-2*pad,height=Screen:scaleBySize(6),percentage=bar.value,radius=0,bordersize=1,margin_h=1,margin_v=1}
+  end
+  header[#header+1]=inset(block);header[#header+1]=VS:new{width=gap}
  end
  if o.summary then
-  local row=require('ui/widget/horizontalgroup'):new{}
-  if o.summary.cover_path then row[#row+1]=require('ui/widget/iconwidget'):new{file=o.summary.cover_path,width=math.floor(o.width*0.12),height=math.floor(o.width*0.16),scale_factor=0,is_icon=false}end
-  row[#row+1]=require('ui/widget/textboxwidget'):new{text=o.summary.text,width=math.floor(o.width*0.8),face=require('ui/font'):getFace('smallinfofont'),height=o.summary.height,height_overflow_show_ellipsis=true}
-  header[#header+1]=row
+  local row=require('ui/widget/horizontalgroup'):new{align='top'}
+  local coverHeight=math.min(o.summary.height,Screen:scaleBySize(104));local coverWidth=math.floor(coverHeight*.68)
+  local textWidth=o.width-2*pad
+  if o.summary.cover_path then
+   row[#row+1]=require('ui/widget/iconwidget'):new{file=o.summary.cover_path,width=coverWidth,height=coverHeight,scale_factor=0,is_icon=false}
+   row[#row+1]=require('ui/widget/horizontalspan'):new{width=gap};textWidth=textWidth-coverWidth-gap
+  end
+  row[#row+1]=require('ui/widget/textboxwidget'):new{text=o.summary.text,width=textWidth,face=require('ui/font'):getFace('smallinfofont'),height=o.summary.height,height_overflow_show_ellipsis=true}
+  header[#header+1]=inset(row);header[#header+1]=VS:new{width=pad}
  end
  header.getHeight=function(h)return h:getSize().h end
  header.setTitle=function(_,text,refresh)title:setTitle(text,refresh)end
@@ -51,28 +64,50 @@ function B.gridClass(Menu)
  return Menu:extend{updateItems=function(m,selected,no_recalculate)
   m.item_group:clear();m.layout={};m.page_info:resetLayout();m.return_button:resetLayout();m.content_group:resetLayout();m:_recalculateDimen(no_recalculate)
   local columns=m.grid_columns or 3;local rows=math.ceil(m.perpage/columns)
-  local width=math.floor(m.item_dimen.w/columns);local height=math.floor(m.item_dimen.h*m.perpage/rows)
+  local Screen=require('device').screen;local outer=Screen:scaleBySize(12);local gap=Screen:scaleBySize(8);local inner=Screen:scaleBySize(8)
+  local width=math.floor((m.item_dimen.w-2*outer-(columns-1)*gap)/columns)
+  local height=math.floor((m.available_height-2*outer-(rows-1)*gap)/rows)
   local H=require('ui/widget/horizontalgroup');local V=require('ui/widget/verticalgroup');local Center=require('ui/widget/container/centercontainer')
-  local pictureHeight=math.floor(height*0.64);local font=require('ui/font'):getFace('smallinfofont')
+  local HS=require('ui/widget/horizontalspan');local VS=require('ui/widget/verticalspan')
+  local contentWidth=width-2*inner-2;local contentHeight=height-2*inner-2
+  local font=require('ui/font'):getFace('cfont',math.max(12,math.floor(m.font_size*.78)))
+  local detailFont=require('ui/font'):getFace('smallinfofont',math.max(10,math.floor(m.font_size*.52)))
+  m.item_group[#m.item_group+1]=VS:new{width=outer}
   for y=1,rows do
-   local group=H:new{};local focus={}
+   local group=H:new{HS:new{width=outer}};local focus={}
    for x=1,columns do
     local index=(m.page-1)*m.perpage+(y-1)*columns+x;local item=m.item_table[index]
     if item then
      item.idx=index
+     local Text=require('ui/widget/textboxwidget')
+     local label=Text:new{text=item.card_title or item.text or '',face=font,width=contentWidth,height=math.floor(contentHeight*(item.icon_file and .35 or .50)),height_adjust=true,height_overflow_show_ellipsis=true,alignment='center'}
+     local detail=item.card_details and item.card_details~=''and Text:new{text=item.card_details,face=detailFont,width=contentWidth,height=math.floor(contentHeight*.35),height_adjust=true,height_overflow_show_ellipsis=true,alignment='center'}or nil
+     local spacer=math.floor(gap/2);local progressHeight=Screen:scaleBySize(3)
+     local textHeight=label:getSize().h+(detail and detail:getSize().h+spacer or 0)+(item.folder_progress~=nil and progressHeight+spacer or 0)
      local body=V:new{align='center'}
      if item.icon_file then
-      local picture=require('ui/widget/iconwidget'):new{file=item.icon_file,width=math.floor(width*0.72),height=pictureHeight,scale_factor=0,is_icon=false,alpha=true}
-      body[#body+1]=Center:new{dimen=Geom:new{w=width-12,h=pictureHeight},picture}
+      local pictureHeight=math.max(1,math.min(math.floor(contentHeight*.65),contentHeight-textHeight-spacer))
+      local picture=require('ui/widget/iconwidget'):new{file=item.icon_file,width=contentWidth,height=pictureHeight,scale_factor=0,is_icon=false,alpha=true}
+      body[#body+1]=Center:new{dimen=Geom:new{w=contentWidth,h=pictureHeight},picture}
+      body[#body+1]=VS:new{width=spacer}
      end
-     if item.folder_progress~=nil then body[#body+1]=require('ui/widget/progresswidget'):new{width=width-32,height=8,percentage=item.folder_progress,radius=0,bordersize=1,margin_h=0,margin_v=0}end
-     body[#body+1]=require('ui/widget/textboxwidget'):new{text=item.text or '',face=font,width=width-20,height=math.floor(height*(item.icon_file and 0.29 or 0.65)),height_adjust=true,height_overflow_show_ellipsis=true,alignment='center'}
+     body[#body+1]=label
+     if detail then body[#body+1]=VS:new{width=spacer};body[#body+1]=detail end
+     if item.folder_progress~=nil then
+      body[#body+1]=VS:new{width=spacer}
+      body[#body+1]=require('ui/widget/progresswidget'):new{width=contentWidth,height=progressHeight,percentage=item.folder_progress,radius=0,bordersize=1,margin_h=0,margin_v=0}
+     end
      local cell=Cell:new{dimen=Geom:new{w=width,h=height},entry=item,idx=index,menu=m,
-      require('ui/widget/container/framecontainer'):new{padding=5,margin=0,bordersize=1,width=width,height=height,Center:new{dimen=Geom:new{w=width-12,h=height-12},body}}}
+      require('ui/widget/container/framecontainer'):new{padding=inner,margin=0,bordersize=1,Center:new{dimen=Geom:new{w=contentWidth,h=contentHeight},body}}}
      group[#group+1]=cell;focus[#focus+1]=cell
-    end
+    else group[#group+1]=HS:new{width=width}end
+    if x<columns then group[#group+1]=HS:new{width=gap}end
    end
-   if #focus>0 then m.item_group[#m.item_group+1]=group;m.layout[#m.layout+1]=focus end
+   group[#group+1]=HS:new{width=m.item_dimen.w-outer-width*columns-gap*(columns-1)}
+   if #focus>0 then
+    if #m.layout>0 then m.item_group[#m.item_group+1]=VS:new{width=gap}end
+    m.item_group[#m.item_group+1]=group;m.layout[#m.layout+1]=focus
+   end
   end
   m:updatePageInfo(selected);m:mergeTitleBarIntoLayout();UI:setDirty(m,'ui')
  end}

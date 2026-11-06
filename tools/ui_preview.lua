@@ -56,6 +56,7 @@ end
 c:rememberList('demo-library',titleFolders)
 local function closeAll()
  while #UI._window_stack>0 do UI:close(UI._window_stack[#UI._window_stack].widget)end
+ Device.screen.bb:fill(require('ffi/blitbuffer').COLOR_WHITE)
 end
 local function shot(name)
  UI:forceRePaint();assert(Device.screen:shot(output..name..suffix..'.png'));print('SCREENSHOT '..name..suffix)

@@ -63,22 +63,29 @@ return function(Shelf,env)
   for _,entry in ipairs(self:orderedEntries(Metadata.visible(entries,self.settings.show_service)))do
    local e=entry;local cached=self.core:cached(e.id);local summary=(self.core.state.summaries or {})[e.id]
    local name=self.settings.load_metadata~=false and(info.chapters or {})[e.name]or nil;name=name or e.name
+   local cardTitle,cardDetails=name,nil
    if e.is_folder then
     name=(e.pinned and '★ 'or '')..name..(e.author and e.author~=''and '\n'..e.author or '')
+    cardTitle=(e.pinned and '★ 'or '')..cardTitle
     if e.stats then
      local details={}
      if e.stats.count~=nil then details[#details+1]=e.stats.count==0 and tr('Empty folder')or string.format(tr('%d files'),e.stats.count)end
      if e.stats.bytes>0 then details[#details+1]=tr('Downloaded')..': '..env.bytes(e.stats.bytes)end
      if #details>0 then name=name..'\n'..table.concat(details,' · ')end
+     local compact={}
+     if e.stats.count~=nil then compact[#compact+1]=e.stats.count==0 and tr('Empty folder')or string.format(tr('%d files'),e.stats.count)end
+     if e.stats.bytes>0 then compact[#compact+1]='✓ '..env.bytes(e.stats.bytes)end
+     cardDetails=table.concat(compact,'\n')
     end
    else
     if self.selection then name=(self.selection[e.id]and '☑ 'or '☐ ')..name
     elseif cached then name=(cached.pool=='offline'and '★ 'or '✓ ')..name end
     if summary and summary.percent then name=name..string.format(' · %d%%',math.floor(summary.percent*100+.5))end
+    cardTitle=name
    end
    local thumb=self.settings.beta_thumbnails and not e.is_folder and self.core:thumbnail(e)
    local cover=e.is_folder and e.cover_path or (self.settings.beta_thumbnails and thumb and self.core.storage:exists(thumb.path)and thumb.path or nil)
-   rows[#rows+1]={text=name,entry=e,icon=e.is_folder and 'appbar.filebrowser'or 'appbar.pageview',icon_file=cover,cover=cover~=nil,folder_progress=e.folder_progress,
+   rows[#rows+1]={text=name,card_title=cardTitle,card_details=cardDetails,entry=e,icon=e.is_folder and 'appbar.filebrowser'or 'appbar.pageview',icon_file=cover,cover=cover~=nil,folder_progress=e.folder_progress,
     callback=function()
      if self.selection and not e.is_folder then self.selection[e.id]=not self.selection[e.id];self:refreshBrowser()
      elseif e.is_folder then self:showFolder(e.id,offline)

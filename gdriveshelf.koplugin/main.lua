@@ -468,7 +468,7 @@ function Shelf:showAbout()
  local size=require('device').screen:scaleBySize(100)
  local logo=require('ui/renderimage'):renderImageFile(pluginRoot..'/resources/logo.png',false,size,size)
  ui():show(require('ui/widget/infomessage'):new{
-  text='GDriveShelf\n\n'..tr("Google Drive library for KOReader.\n\nWhole-file reading, offline downloads and native reading-progress sync.\n\nLanguage follows your KOReader interface setting."),
+  text='Google Drive Shelf\n\n'..tr("Google Drive library for KOReader.\n\nWhole-file reading, offline downloads and native reading-progress sync.\n\nLanguage follows your KOReader interface setting."),
   image=logo,image_width=size,image_height=size,alpha=true,
  })
 end

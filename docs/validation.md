@@ -10,7 +10,7 @@ Install LuaJIT and Python 3, then run from the source checkout:
 
 ```sh
 make test
-make package VERSION=0.1.5
+make package VERSION=0.1.6
 ```
 
 `make test` runs Lua suites and Python authorization tests without Google credentials. `make package` also checks syntax and builds an allowlisted release ZIP and SHA-256 checksum in `dist/`.
@@ -103,6 +103,14 @@ The corresponding opt-in harnesses are `tools/ux_drive_fixtures.lua`, `tools/and
 The automated suite adds regressions for account/name/case path collisions, folder ordering and history grouping, indexing intervals, cancellation races, local jobs while offline, relocation recovery, stale preview invalidation, malformed ZIPs, and servers that ignore Range. Preview tests enforce response validation before accepting bytes and forbid a complete remote archive even across combined ranges. Android's missing monolithic zlib export was handled with a checked system-zlib fallback and verified with a Deflate fixture.
 
 Screenshots were inspected from both native runtimes. The emulator evidence does not establish physical E-Ink refresh performance or guarantee that every vendor firmware behaves identically.
+
+### Layout refinement
+
+The follow-up layout checks use `tools/layout_smoke.lua` with native KOReader widgets. They cover 5, 9 and 11 entries, a partial final row and second page, long titles, bounded card contents, a toolbar and optional information header. Checks passed at 1200 × 1600 and 600 × 800. The old layout fails the margin check; the revised layout keeps fixed columns and separate card gutters. Set `GDRIVESHELF_ROOT`, a disposable `KO_HOME`, and `GDRIVESHELF_OUTPUT`, then run the script from the native runtime directory. `GDRIVESHELF_LAYOUT_IMAGE` optionally selects a local image; the default is the bundled logo.
+
+`tools/android_layout_smoke.lua` is an optional temporary userpatch for the previously prepared isolated AVD. It reuses only its cached disposable fixtures, forces offline mode and rejects provider access. The actual five-item grid, memory, actions, settings and information screens were inspected on Android API 30. It does not import OAuth files or write to Drive. Russian and English galleries were regenerated; stale screenshots from the superseded settings layout were removed.
+
+A small warm-render comparison on macOS used identical local images and ten measured nine-card redraws after warm-up: median approximately 14.9 ms before and 12.8 ms after. This only checks for a large layout regression; it does not measure physical E-Ink refresh time. No network operations, scanners or image decoders were added by the layout changes.
 
 ### Physical readers
 

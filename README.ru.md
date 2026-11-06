@@ -103,7 +103,7 @@ flowchart LR
 
 ```sh
 make test
-make package VERSION=0.1.5
+make package VERSION=0.1.6
 ```
 
 CI проверяет pull request и автоматически выпускает архив только с папкой плагина и SHA-256 при пуше в `master`. Для [сообщения об ошибке](../../issues) приложите версию KOReader и шаги воспроизведения, удалив данные авторизации.
