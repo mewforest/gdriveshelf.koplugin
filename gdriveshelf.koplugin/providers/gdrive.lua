@@ -6,7 +6,7 @@ local UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files'
 local API_V2 = 'https://www.googleapis.com/drive/v2/files'
 local UPLOAD_V2 = 'https://www.googleapis.com/upload/drive/v2/files'
 local TOKEN = 'https://oauth2.googleapis.com/token'
-local FIELDS = 'id,name,parents,mimeType,size,modifiedTime,md5Checksum,version'
+local FIELDS = 'id,name,parents,mimeType,size,createdTime,modifiedTime,md5Checksum,version'
 local FIELDS_V2 = 'id,title,parents(id),mimeType,fileSize,modifiedDate,md5Checksum,version,etag'
 local JSON_LIMIT = 4 * 1024 * 1024
 local function err(code, message, status) return {code=code,message=message,status=status} end
@@ -30,7 +30,7 @@ local function normalize(f, parent, headers)
     local first_parent=type(f.parents)=='table' and f.parents[1]
     if type(first_parent)=='table' then first_parent=first_parent.id end
     return {id=f.id,name=f.name or f.title,parent_id=first_parent or parent,
-        is_folder=f.mimeType=='application/vnd.google-apps.folder',size=size,modified_time=f.modifiedTime or f.modifiedDate,
+        is_folder=f.mimeType=='application/vnd.google-apps.folder',size=size,created_time=f.createdTime or f.createdDate,modified_time=f.modifiedTime or f.modifiedDate,
         checksum=f.md5Checksum,version=f.version,etag=header(headers,'etag') or f.etag,mime_type=f.mimeType}
 end
 

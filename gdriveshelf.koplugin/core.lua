@@ -13,7 +13,7 @@ function Core.new(o)
  if not saved and self.storage:exists(self.index_path)then error('Cannot read durable index; existing progress was preserved: '..tostring(readerr))end
  self.state=saved or {}
  if self.storage.cleanupDownloads then self.storage:cleanupDownloads(self.state.entries or {})end
- for _,k in ipairs{'entries','docs','folders','sync','downloads','summaries'}do self.state[k]=self.state[k] or {} end
+ for _,k in ipairs{'entries','docs','folders','sync','downloads','summaries','last_opened'}do self.state[k]=self.state[k] or {} end
  for _,k in ipairs{'pending','bases','conflicts'}do self.state.sync[k]=self.state.sync[k] or {} end
  self.jobs:setOffline(self.settings.offline==true)
  return self
@@ -84,7 +84,10 @@ function Core:cachedList(parent)
 end
 function Core:rememberList(parent,entries)
  for _,e in ipairs(entries)do e.parent_id=e.parent_id or parent
-  if e.is_folder then self.state.folders[e.id]=e
+  if e.is_folder then
+   local old=self.state.folders[e.id];e.first_seen=old and old.first_seen or os.time()
+   e.created_time=e.created_time or (old and old.created_time) or os.date('!%Y-%m-%dT%H:%M:%SZ',e.first_seen)
+   self.state.folders[e.id]=e
   else self.state.docs[e.id]=e end
  end
  local text=self.storage.json.encode(entries);local id='list:'..parent

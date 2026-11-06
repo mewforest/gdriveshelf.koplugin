@@ -23,9 +23,12 @@ function M.ordered(entries,mode,reverse,cmp)
   if not not a.is_folder~=not not b.is_folder then return not not a.is_folder end
   local av,bv
   if mode=='size' then av,bv=tonumber(a.size) or 0,tonumber(b.size) or 0
-  elseif mode=='date' then av,bv=a.modified_time or '',b.modified_time or '' end
+  elseif mode=='date' then av,bv=a.modified_time or '',b.modified_time or ''
+  elseif mode=='read' then av,bv=tonumber(a.last_read)or 0,tonumber(b.last_read)or 0
+  elseif mode=='added' then av,bv=a.created_time or '',b.created_time or '' end
   local less,more
-  if av and av~=bv then less,more=av<bv,av>bv
+  if av and av~=bv then
+   if mode=='read'or mode=='added'then less,more=av>bv,av<bv else less,more=av<bv,av>bv end
   elseif a.name~=b.name then
    if mode=='name' then less,more=a.name<b.name,a.name>b.name
    elseif cmp then less,more=cmp({text=a.name},{text=b.name}),cmp({text=b.name},{text=a.name})

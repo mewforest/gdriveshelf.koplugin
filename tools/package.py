@@ -15,7 +15,7 @@ def package(version, output=None):
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f'gdriveshelf.koplugin-{version}.zip'
     members = [(p, p.relative_to(ROOT).as_posix()) for p in sorted((ROOT / 'gdriveshelf.koplugin').rglob('*')) if p.is_file()]
-    members += [(ROOT / p, p) for p in ['README.md', 'LICENSE', 'docs/authentication.md', 'docs/validation.md']]
+    members += [(ROOT / p, p) for p in ['README.md', 'README.ru.md', 'LICENSE', 'docs/authentication.md', 'docs/authentication.ru.md', 'docs/validation.md', 'docs/branding.md']]
     members.append((ROOT / 'tools/authorize.py', 'gdriveshelf-tools/authorize.py'))
     members += [(p, p.relative_to(ROOT).as_posix()) for p in sorted((ROOT / 'docs/screenshots').glob('*.png'))]
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as handle:

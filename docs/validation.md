@@ -1,53 +1,80 @@
-# Проверка GDriveShelf
+[Back to README](../README.md)
 
-Проверено 6 ноября 2026.
+# Validation guide
 
-## Среда
+GDriveShelf targets the **KOReader 2026.07 API**. Native integration and visual checks have been run on the official **macOS ARM64 KOReader `v2026.07.2-310-gd183b7f`** build. Baseline validation was performed on 6 November 2026. Physical Android reader validation remains outstanding; desktop results do not establish firmware compatibility.
 
-- Целевой API: KOReader 2026.07, проверены интерфейсы релизных исходников.
-- Реальные интеграционные и визуальные испытания: официальная macOS ARM64 сборка KOReader `v2026.07.2-310-gd183b7f`.
-- Сборка и все крупные тестовые данные находятся на внешнем SSD. Android-эмулятор не устанавливался.
-- Физический DEXP M8 Prudentia и его Android-прошивка ещё не испытаны.
+## Automated checks
 
-## Автоматические проверки
+Install LuaJIT and Python 3, then run from the source checkout:
 
-`make package` проверяет синтаксис Lua, запускает все `tests/test_*.lua`, Python unittest для авторизации и собирает allowlisted ZIP с SHA-256.
+```sh
+make test
+make package VERSION=0.1.0
+```
 
-Проверяются независимые бюджеты трёх пулов, физический резерв, LRU, защита активной книги, офлайн-открытие без сети, группировка и границы parentId, пагинация Drive, ограниченное скачивание, проверка MD5, безопасный парсер Lua, нативные имена метаданных, конфликт и сохранение очереди, гонки новых снимков, блокировка устаревших записей, временные файлы и границы интерфейса.
+`make test` runs Lua suites and Python authorization tests without Google credentials. `make package` also checks syntax and builds an allowlisted release ZIP and SHA-256 checksum in `dist/`.
 
-## Реальный KOReader
+Coverage includes independent storage budgets and the free-space reserve, LRU eviction and open-book protection, offline opening, folder boundaries and pagination, bounded downloads and MD5 verification, safe Lua metadata parsing, native sidecar naming, progress snapshots, persistent sync queues, stale-write rejection, conflict handling, temporary-file cleanup, and UI behavior. Packaging excludes runtime state and credentials.
 
-`tools/native_integration.lua` подтвердил:
+## Native KOReader integration
 
-- атомарную запись/чтение JSON и определение свободного места;
-- права `0600` у локальных файлов состояния;
-- очистку старых оборванных загрузок с сохранением готовых файлов;
-- запись нативной `.sdr` и чтение её обратно через настоящий `DocSettings`;
-- сохранение регистра расширения: `Book.CBZ` → `metadata.CBZ.lua`;
-- выполнение фоновой задачи в отдельном процессе при продолжающихся таймерах UI.
+Use an official KOReader runtime with its bundled LuaJIT and modules. Run harnesses from that runtime directory with a separate, disposable `KO_HOME`. Keep it separate from your regular reading profile.
 
-`tools/ui_preview.lua` отрисовал библиотеку, память, настройки, офлайн-дерево, карточку манги и обложку. Через обработчик открытия GDriveShelf открыт локальный CBZ на 38 страниц, выполнен переход на вторую страницу и проверена отрисовка. Скриншоты просмотрены визуально; текст, кнопки и прокрутка доступны, перекрытий важных элементов не обнаружено.
+For example, after changing to the KOReader runtime directory:
 
-Отдельный нативный smoke-test проверил InputDialog, FileChooser и импорт синтетической авторизации с правами `0600`.
+```sh
+export GDRIVESHELF_ROOT=/absolute/path/to/source-checkout
+export KO_HOME="$(mktemp -d /tmp/gdriveshelf-profile.XXXXXX)"
+export GDRIVESHELF_TEST_ROOT="$(mktemp -d /tmp/gdriveshelf-native.XXXXXX)"
+./luajit "$GDRIVESHELF_ROOT/tools/native_integration.lua"
+```
 
-Скриншоты сняты с локальной демонстрационной библиотекой; в них нет токенов, аккаунтов, других тайтлов и персональных путей. Для повторения теста нужны явно заданные пути и отдельный профиль `KO_HOME`; он не должен указывать на обычный профиль пользователя.
+`tools/native_integration.lua` checks atomic JSON storage, owner-only state permissions, free-space reporting, cleanup of interrupted downloads, native `DocSettings` sidecar round trips, extension case, and worker execution while UI timers continue.
 
-## Реальный Google Drive
+`tools/ui_preview.lua` renders the title library, library actions, settings and icons, storage, offline tree, title information, logo, and native reader from local fixtures. It checks saved title sorting and resumes the last document before turning a native page. Set `GDRIVESHELF_LANGUAGE=en_US` for English screenshots (`*-en.png`), or `ru` for Russian. It requires `GDRIVESHELF_SAMPLES` to point at a fixture directory with `folder.json`, a matching CBZ, `cover.jpg`, and `index.json`. Read the harness before preparing fixtures: it expects a particular chapter filename pattern and page count. Use redistributable or locally owned material. Review the resulting images in `docs/screenshots/` for clipped text, overlapping controls, language, and readable contrast.
 
-Read-only сценарий `tools/live_smoke.lua` выполнил настоящие запросы провайдера к разрешённой тестовой папке:
+Native checks have also covered the credential file chooser and import of synthetic authorization data. HTTPS was verified using the bundled CA store and an intentionally invalid test token; the expected result was an authorization rejection after a verified TLS connection.
 
-- найдено пять глав, обложка, `index.json` и существующая `.sdr`;
-- проверены фильтрация служебных файлов и порядок чтения;
-- целиком скачаны CBZ (~26 МиБ), обложка и JSON с проверкой размера и MD5;
-- существующий нативный прогресс прочитан безопасным парсером без изменения.
+## Optional live Google Drive checks
 
-`tools/live_sync_smoke.lua` работал исключительно в новом тестовом подкаталоге внутри разрешённой папки. Подтверждены создание `.sdr`, чтение обратно, условное обновление, отказ устаревшего `If-Match` с HTTP 412 и сохранение локальной и облачной версий при параллельных изменениях. После теста созданный подкаталог перенесён в корзину. Исходные главы и прогресс не изменялись; в других тайтлах запись не выполнялась.
+These checks need real credentials and an explicitly chosen test folder. Keep credentials outside the checkout and use a dedicated test library. The helper scripts refresh the supplied credentials file when necessary; never publish that file or its contents.
 
-Практические поправки по результатам live-тестов:
+From the KOReader runtime directory, set:
 
-- v3 не вернул ETag для метаданных; провайдер получает согласованный снимок через поддерживаемый v2 и использует условный v2 PUT для обновлений. Просмотр, создание и скачивание остаются на v3.
-- Drive может увеличить `version` без изменения байтов. Для бинарного содержимого проверка равных MD5 приоритетнее изменения служебного номера версии.
+```sh
+export GDRIVESHELF_CREDS=/private/path/to/gdriveshelf-credentials.json
+export GDRIVESHELF_TEST_PARENT=drive-folder-id
+export GDRIVESHELF_OUTPUT="$(mktemp -d /tmp/gdriveshelf-live.XXXXXX)"
+```
 
-## Что ещё требует проверки
+With `GDRIVESHELF_ROOT` and the disposable `KO_HOME` still set:
 
-На физической Android-читалке остаётся проверить TLS/LuaSec конкретной сборки, системное поведение сна и нехватки памяти, доступ к выбранному разделу и жесты. macOS-интеграция и тесты не заменяют испытание прошивки DEXP. Плагин не обещает продолжать загрузки после завершения приложения Android.
+```sh
+./luajit "$GDRIVESHELF_ROOT/tools/live_smoke.lua"
+```
+
+This reads Drive listings, downloads the first supported book and adjacent cover/metadata into the output directory, checks size and MD5, and safely reads existing `.sdr` data when present. It does not change the cloud library. Confirm the test folder contains suitable fixtures before running it.
+
+For sync writes, place a small, valid test archive named `Smoke.cbz` in `GDRIVESHELF_OUTPUT`, inspect `tools/live_sync_smoke.lua`, then run:
+
+```sh
+./luajit "$GDRIVESHELF_ROOT/tools/live_sync_smoke.lua"
+```
+
+This creates a new test child under the supplied parent, uploads the fixture, creates and reads native `.sdr` data, checks conditional updates and stale-write rejection, and simulates a progress conflict. It moves its own test child to Drive trash afterwards. If execution is interrupted, inspect the local `test-artifact.json` to identify the test child for cleanup.
+
+Live checks have confirmed these flows against Drive, including HTTP 412 for a stale conditional update. The provider uses Drive v2 for the ETag snapshot and conditional update where needed; listing, creation, and downloads use v3. Binary content identity uses equal MD5 values even when Drive changes a service version number.
+
+## Android device checklist
+
+Before relying on a physical reader, check:
+
+- TLS/LuaSec and the bundled CA store in that KOReader build.
+- Permissions and free-space reporting on the selected storage volume.
+- Opening a downloaded chapter with network access blocked.
+- Touch and long-press actions, scrolling, and e-ink redraws.
+- Sleep/resume, process termination, and low-memory behavior.
+- Recovery of interrupted downloads and pending progress sync after restart.
+
+Downloads require KOReader to remain running. Report device-specific failures with the KOReader version, operating system, reproduction steps, and sanitized diagnostics.
