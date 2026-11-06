@@ -1,7 +1,7 @@
 -- Cache policy is pure: the caller applies the returned eviction plan on disk.
 local Cache={};Cache.__index=Cache
 function Cache.new(o)
- return setmetatable({entries=o.entries or {},auto_limit=o.auto_limit or 3072*1048576,meta_limit=o.meta_limit or 256*1048576,reserve=o.reserve or 512*1048576,free_bytes=o.free_bytes},Cache)
+ return setmetatable({entries=o.entries or {},auto_limit=o.auto_limit or 3072*1048576,meta_limit=o.meta_limit or 256*1048576,reserve=o.reserve or 512*1048576,free_bytes=o.free_bytes,volume=o.volume},Cache)
 end
 function Cache:usage()
  local u={auto=0,offline=0,meta=0}
@@ -17,7 +17,7 @@ function Cache:plan(pool,bytes,protected,replace_id)
  if limit and bytes>limit then return nil,'File exceeds cache limit' end
  local used=self:usage()[pool];local old=self.entries[replace_id]
  if old and old.pool==pool then used=used-(old.size or 0) end
- local available=type(self.free_bytes)=='function' and self.free_bytes() or self.free_bytes
+ local available=type(self.free_bytes)=='function' and self.free_bytes(pool) or self.free_bytes
  if not available then return nil,'Cannot determine free disk space' end
  local candidates={}
  for id,e in pairs(self.entries) do
@@ -34,8 +34,9 @@ function Cache:plan(pool,bytes,protected,replace_id)
   local budget=limit and used+bytes>limit
   local physical=available-bytes<self.reserve
   if not budget and not physical then break end
-  if physical or (budget and c.e.pool==pool) then
-   victims[#victims+1]=c.id;available=available+(c.e.size or 0)
+  local same_volume=not self.volume or self.volume(c.e.pool)==self.volume(pool)
+  if (physical and same_volume)or(budget and c.e.pool==pool)then
+   victims[#victims+1]=c.id;if same_volume then available=available+(c.e.size or 0)end
    if c.e.pool==pool then used=used-(c.e.size or 0) end
   end
  end

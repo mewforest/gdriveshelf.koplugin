@@ -31,3 +31,8 @@ H.test('manual promotion preserves identity and file',function()
  c:promote('a'); H.eq(entries.a.pool,'offline'); H.eq(entries.a.size,60)
 end)
 print('cache tests passed')
+H.test('evicting metadata on another volume cannot pretend to free book space',function()
+ local entries={cover={pool='meta',size=1000,last_access=0}}
+ local c=Cache.new{entries=entries,reserve=512,free_bytes=600,auto_limit=10000,volume=function(pool)return pool=='meta'and 'system'or 'books'end}
+ assert(not c:plan('auto',200,{}),'Another volume must not satisfy the book reserve')
+end)

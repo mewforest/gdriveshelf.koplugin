@@ -47,7 +47,13 @@ for _,e in ipairs(entries)do
  end
 end
 assert(first);c.state.last_document=first.id;c:save()
-c:rememberList('demo-library',{c.state.folders['demo-title']})
+local titleFolders={c.state.folders['demo-title']}
+for i=2,9 do
+ local id='demo-folder-'..i;local folder={id=id,parent_id='demo-library',name=(language=='ru'and 'Пример папки 'or 'Example folder ')..i,is_folder=true}
+ c.state.folders[id]=folder;titleFolders[#titleFolders+1]=folder
+ if i==2 then c:rememberList(id,{})end
+end
+c:rememberList('demo-library',titleFolders)
 local function closeAll()
  while #UI._window_stack>0 do UI:close(UI._window_stack[#UI._window_stack].widget)end
 end
@@ -58,6 +64,7 @@ shelf:showLibrary();shot('connect');closeAll()
 -- Synthetic credentials only; the preview remains strictly offline.
 c.credentials={client_id='demo-client',refresh_token='demo-refresh',access_token='demo-access'}
 shelf:showFolder('demo-library');shot('titles');closeAll()
+shelf.settings.folder_view='grid';shelf:showFolder('demo-library');shot('titles-grid');closeAll();shelf.settings.folder_view='list'
 shelf:showLibrary();shot('library');closeAll()
 shelf:showFolderActions('demo-title',true);shot('library-actions');closeAll()
 shelf:showFileSort();shot('file-sorting');closeAll()
@@ -65,7 +72,11 @@ shelf:showTitleSort();shelf.preview_menu.item_table[3].callback();shot('title-so
 assert(LuaSettings:open(DataStorage:getSettingsDir()..'/gdriveshelf.lua'):readSetting('title_sort')=='read','Title sorting did not persist')
 closeAll()
 shelf:showMemory();shot('storage');closeAll()
-shelf:showSettings();shot('settings')
+shelf:showSettings();shot('settings');closeAll()
+shelf:showSettingsCategory('catalog');shot('settings-catalog');closeAll()
+shelf:showSettingsCategory('reading');shot('settings-reading');closeAll()
+shelf:showSettingsCategory('experimental');shot('settings-experimental');closeAll()
+shelf:showSettings();
 local settingsMenu=shelf.preview_menu
 if settingsMenu.page_num>1 then settingsMenu:onGotoPage(2);shot('settings-more')end
 closeAll()

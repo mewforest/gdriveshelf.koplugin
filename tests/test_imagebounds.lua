@@ -1,0 +1,13 @@
+local H=require('tests/helper');local T=require('gdriveshelf/thumbnails')
+local function be(n)return string.char(math.floor(n/16777216)%256,math.floor(n/65536)%256,math.floor(n/256)%256,n%256)end
+H.test('rejects oversized image dimensions before invoking a decoder',function()
+ local png='\137PNG\r\n\26\n'..be(13)..'IHDR'..be(100000)..be(100000)
+ local width=T.dimensions(png);assert(not width)
+end)
+H.test('reads bounded PNG and JPEG dimensions without decoding their pixels',function()
+ local png='\137PNG\r\n\26\n'..be(13)..'IHDR'..be(800)..be(1200)
+ local w,h=T.dimensions(png);H.eq(w,800);H.eq(h,1200)
+ local jpeg='\255\216\255\192\0\17\8\4\176\3\32'..string.rep('\0',10)
+ w,h=T.dimensions(jpeg);H.eq(w,800);H.eq(h,1200)
+ assert(not T.dimensions('not an image'))
+end)

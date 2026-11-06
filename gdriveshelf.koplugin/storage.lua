@@ -5,8 +5,8 @@ function S.safeName(name)
 end
 function S.key(value) return (tostring(value):gsub('.',function(c)return string.format('%02x',c:byte())end)) end
 function S.new(o)
- local self=setmetatable({root=o.root,json=o.json or require('json'),lfs=o.lfs or require('libs/libkoreader-lfs')},S)
- self:mkdir(self.root);self:mkdir(self.root..'/jobs');self:mkdir(self.root..'/files');self:mkdir(self.root..'/meta');self:mkdir(self.root..'/snapshots')
+ local self=setmetatable({root=o.root,account=o.account or o.root,books_dir=o.books_dir or o.root..'/Books',json=o.json or require('json'),lfs=o.lfs or require('libs/libkoreader-lfs')},S)
+ self:mkdir(self.root);self:mkdir(self.root..'/jobs');self:mkdir(self.books_dir);self:mkdir(self.root..'/meta');self:mkdir(self.root..'/snapshots')
  return self
 end
 function S:mkdir(path)
@@ -55,7 +55,7 @@ end
 -- Old-session incoming files are never ready archives. Unlinking an orphan's
 -- open partial file is safe: it cannot publish into the new session's namespace.
 function S:cleanupDownloads(entries)
- local ready={};for _,e in pairs(entries or {})do if e.path then ready[e.path]=true end end
+ local ready={};for _,e in pairs(entries or {})do if e.path then ready[e.path]=true end;if e.preview_path then ready[e.preview_path]=true end end
  local removed=0
  local function walk(path,jobs)
   if self.lfs.attributes(path,'mode')~='directory'then return end
@@ -63,27 +63,89 @@ function S:cleanupDownloads(entries)
    local p=path..'/'..name;local a=self.lfs.symlinkattributes(p)
    if a and a.mode=='directory'then walk(p,jobs)
    elseif a and a.mode=='file' and not ready[p]then
-    local temp=name:match('%.incoming%-%d+%-%d+%-%w+%.part$') or name:match('%.incoming%-%d+%-%d+%-%w+$')
+    local temp=name:match('%.incoming%-%d+%-%d+%-%w+%.part$') or name:match('%.incoming%-%d+%-%d+%-%w+$')or name:match('%.incoming%-%d+%-%d+%-%w+%.png$')
     if temp or (jobs and (name:match('^result%-')or name:match('^sync%-')))then if os.remove(p)then removed=removed+1 end end
    end
   end end
  end
  walk(self.root..'/files');walk(self.root..'/meta');walk(self.root..'/jobs',true)
+ -- Books may contain user files and other accounts. Inspect only registered
+ -- basenames owned by this account, never recursively clean a chosen folder.
+ local registry=self.books_dir and self:readJSON(self.books_dir..'/.gdriveshelf-paths.json',16*1048576)
+ local owner=S.key(self.account or self.root)..':'
+ for key,relative in pairs(registry and registry.files or {})do if key:sub(1,#owner)==owner then
+  local folder,base=relative:match('^(.*)/([^/]+)$');local dir=self.books_dir..'/'..folder
+  if self.lfs.attributes(dir,'mode')=='directory'then
+   for name in self.lfs.dir(dir)do
+    if name:sub(1,#base+10)==base..'.incoming-'and not ready[dir..'/'..name]then
+     local suffix=name:sub(#base+11)
+     if suffix:match('^%d+%-%d+%-%w+%.part$')or suffix:match('^%d+%-%d+%-%w+$')then if os.remove(dir..'/'..name)then removed=removed+1 end end
+    end
+   end
+  end
+ end end
  return removed
 end
-function S:freeBytes()
+function S:freeBytes(path)
+ local target=path or self.books_dir or self.root
  local ok,u=pcall(require,'ffi/util')
- if ok and u.getFreeDiskSpace then local good,n=pcall(u.getFreeDiskSpace,self.root);if good and type(n)=='number' then return n end end
+ if ok and u.getFreeDiskSpace then local good,n=pcall(u.getFreeDiskSpace,target);if good and type(n)=='number' then return n end end
  -- df is present on Android (toybox) and macOS. Only a quoted local path reaches the shell.
- local quote="'"..self.root:gsub("'","'\\''").."'"
+ local quote="'"..target:gsub("'","'\\''").."'"
  local f=io.popen('df -Pk '..quote..' 2>/dev/null','r');if not f then return nil end
  local out=f:read('*a');f:close();local available
  for line in out:gmatch('[^\n]+') do local n=line:match('^%S+%s+%d+%s+%d+%s+(%d+)%s+%d+%%');if n then available=tonumber(n)*1024 end end
  return available
 end
+-- A shared ownership registry keeps names readable without allowing two accounts
+-- or duplicate Drive names to overwrite one another. Paths never change on pin.
 function S:filePath(entry,pool)
- local dir=self.root..(pool=='meta' and '/meta/' or '/files/')..S.key(entry.id)
- assert(self:mkdir(dir));return dir..'/'..S.safeName(entry.name)
+ if pool=='meta'then
+  local dir=self.root..'/meta/'..S.key(entry.id);assert(self:mkdir(dir))
+  return dir..'/'..S.safeName(entry.name)
+ end
+ local registry=self.books_dir..'/.gdriveshelf-paths.json'
+ local map,why=self:readJSON(registry,16*1048576)
+ if not map and self.lfs.attributes(registry)then error(why or 'Cannot read book paths')end
+ map=map or {folders={},files={}};map.folders=map.folders or {};map.files=map.files or {}
+ local owner=S.key(self.account or self.root)..':'
+ local filekey=owner..S.key(entry.id)
+ if map.files[filekey]then return self.books_dir..'/'..map.files[filekey]end
+ local function allocate(base,key,values,parent,is_file)
+  base=S.safeName(base);local stem,ext=base:match('^(.*)(%.[^%.]+)$')
+  if not is_file or not stem then stem,ext=base,''end
+  local candidate=base;local attempt=0
+  while true do
+   local relative=(parent and parent..'/'or '')..candidate;local occupied=false
+   for _,used in pairs(values)do if used:lower()==relative:lower()then occupied=true;break end end
+   if not occupied and not self.lfs.attributes(self.books_dir..'/'..relative)then return relative end
+   attempt=attempt+1
+   candidate=stem..' ['..S.key(key):sub(1,12)..(attempt>1 and '-'..attempt or '')..']'..ext
+  end
+ end
+ local folderkey=owner..S.key(entry.parent_id or 'root')
+ local folder=map.folders[folderkey]
+ if not folder then
+  folder=allocate(entry.parent_name or entry.parent_id or 'Library',folderkey,map.folders,nil,false)
+  map.folders[folderkey]=folder
+ end
+ assert(self:mkdir(self.books_dir..'/'..folder))
+ local relative=allocate(entry.name,entry.id,map.files,folder,true)
+ map.files[filekey]=relative
+ local ok,err=self:writeJSON(registry,map);assert(ok,err)
+ return self.books_dir..'/'..relative
+end
+function S:volume(path)return self.lfs.attributes(path or self.books_dir or self.root,'dev')end
+function S:diskStats(path)
+ path=path or self.books_dir or self.root
+ local quote="'"..path:gsub("'","'\\''").."'"
+ local f=io.popen('df -Pk '..quote..' 2>/dev/null','r');if not f then return {}end
+ local out=f:read('*a');f:close()
+ for line in out:gmatch('[^\n]+')do
+  local total,used,available=line:match('^%S+%s+(%d+)%s+(%d+)%s+(%d+)%s+%d+%%')
+  if total then return {total=tonumber(total)*1024,used=tonumber(used)*1024,free=tonumber(available)*1024}end
+ end
+ return {}
 end
 function S:writeTemp(text)
  self._seq=(self._seq or 0)+1

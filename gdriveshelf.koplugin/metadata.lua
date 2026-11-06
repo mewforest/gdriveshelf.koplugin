@@ -21,4 +21,5 @@ end
 function M.visible(entries,show)
  local r={};for _,e in ipairs(entries or {}) do if show or not M.isService(e) then r[#r+1]=e end end;return r
 end
+function M.fingerprint(e)return '2:'..tostring(e.version or '')..':'..tostring(e.modified_time or '')..':'..tostring(e.checksum or '')end
 return M

@@ -34,7 +34,7 @@ The helper uses PKCE S256, a random `state`, and a temporary callback listener b
 ## 3. Import into KOReader
 
 1. Transfer `gdriveshelf-credentials.json` to a location KOReader can access.
-2. Open **GDriveShelf** and select **Choose authorization JSON** on the connection screen. Import also remains available in Settings.
+2. Open **Google Drive Shelf** and select **Choose authorization JSON** on the connection screen. Import also remains available under **Settings → Connection and startup**.
 3. Select the generated credentials file. Do not select the original OAuth client JSON.
 4. After a successful import, remove unnecessary copies from Downloads and the transfer device.
 

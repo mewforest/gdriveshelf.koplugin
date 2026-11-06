@@ -18,7 +18,7 @@ def package(version, output=None):
     members.append((ROOT / 'LICENSE', 'gdriveshelf.koplugin/LICENSE'))
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as handle:
         for source, name in members:
-            if source.is_symlink() or source.suffix not in {'.lua', '.pem', '.md', '.py', '.png'} and source.name != 'LICENSE':
+            if source.is_symlink() or source.suffix not in {'.lua', '.pem', '.md', '.py', '.png', '.svg'} and source.name != 'LICENSE':
                 raise ValueError(f'Unexpected package member: {name}')
             if any(word in source.name.lower() for word in ['credential', 'refresh_token', '.part']):
                 raise ValueError('Private/runtime file in package input')

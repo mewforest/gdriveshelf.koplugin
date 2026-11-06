@@ -36,3 +36,9 @@ H.test('reopened folder receives its already in-flight listing',function()
  completion({result={{id='chapter',name='1.cbz',parent_id='new-title',is_folder=false}}})
  assert(first and second and first[1].id=='chapter' and second[1].id=='chapter')
 end)
+H.test('opening a cached book first cancels an unfinished relocation',function()
+ local c=setup();c.relocating=true;local cancelled
+ c.jobs.cancel=function(_,key)cancelled=key;c.relocating=nil end
+ local path;c:open({id='a',name='1.cbz',parent_id='x'},function(p)path=p end)
+ H.eq(cancelled,'relocate');H.eq(path,'/cache/a');assert(not c.relocating)
+end)

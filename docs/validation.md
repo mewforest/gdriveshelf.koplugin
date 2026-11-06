@@ -10,7 +10,7 @@ Install LuaJIT and Python 3, then run from the source checkout:
 
 ```sh
 make test
-make package VERSION=0.1.0
+make package VERSION=0.1.5
 ```
 
 `make test` runs Lua suites and Python authorization tests without Google credentials. `make package` also checks syntax and builds an allowlisted release ZIP and SHA-256 checksum in `dist/`.
@@ -91,6 +91,18 @@ After validation the temporary Drive subtree was moved to trash, startup patches
 Two Android-2026.07 compatibility failures found by these runs are covered: the missing POSIX declaration and the absent natural-sort preparation hook. Unexpected UI errors now write code locations to `gdriveshelf-diagnostic.log` in KOReader's data folder; error payloads, credentials, and JSON contents are excluded.
 
 `tools/android_end_action_smoke.lua` adds a fresh-fixture run through real paged-reader EOF events. Native **Nothing**, **Ask**, **Open next file**, and auto-mark-finished behavior were checked, including cached and uncached next chapters, the final chapter boundary, and restarting with `start_with=last` at page 2. A cache budget too small for both protected/open and next archives was rejected safely; increase the budget or pin files when prefetch needs more space. Approximate folder bars were rendered on Android from cached children with no network jobs.
+
+### UX release checks
+
+The [sanitized UX result](test-results/android-ux-api30.json) records **30 additional passed checks** on Android API 30 with KOReader v2026.07. These cover the native right-hand menu and **Start with** integration, one-level indexing, bounded cover processing, live Store/Deflate ZIP range previews, cancelled opening, and immediate download feedback from both native EOF paths. The automatic-next test joined an already-running prefetch; the popup test selected the native next-file action.
+
+Generated EPUB and PDF fixtures exercised native reading positions, offline reopening, durable pending progress, and cloud `.sdr` round trips with local `doc`, `dir`, and `hash` storage. EPUB positions were checked as xpointers. Relocation tests covered cancellation before opening, an offline interrupted move with newer progress, durable paths after refresh/eviction, and an injected failure after committing the new paths. Restarting an old-path reader and closing it preserved its latest page at the new path.
+
+The corresponding opt-in harnesses are `tools/ux_drive_fixtures.lua`, `tools/android_ux_smoke.lua`, `tools/android_ux_followup.lua`, and `tools/android_ui_gallery.lua`. They require a private fixture plan produced inside a disposable test subtree; inspect the scripts before running them. `tools/ux_native_smoke.lua` checks local Store/Deflate previews with the bundled native runtime. `tools/ui_preview.lua` also renders the folder grid, categorized settings and storage in English and Russian.
+
+The automated suite adds regressions for account/name/case path collisions, folder ordering and history grouping, indexing intervals, cancellation races, local jobs while offline, relocation recovery, stale preview invalidation, malformed ZIPs, and servers that ignore Range. Preview tests enforce response validation before accepting bytes and forbid a complete remote archive even across combined ranges. Android's missing monolithic zlib export was handled with a checked system-zlib fallback and verified with a Deflate fixture.
+
+Screenshots were inspected from both native runtimes. The emulator evidence does not establish physical E-Ink refresh performance or guarantee that every vendor firmware behaves identically.
 
 ### Physical readers
 

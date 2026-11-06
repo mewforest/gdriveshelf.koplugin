@@ -1,3 +1,4 @@
+local Catalog=require('gdriveshelf/catalog')
 local Cache=require('gdriveshelf/cache')
 local Library=require('gdriveshelf/library')
 local Metadata=require('gdriveshelf/metadata')
@@ -5,6 +6,10 @@ local SDR=require('gdriveshelf/sdr')
 local Sync=require('gdriveshelf/sync')
 local Core={};Core.__index=Core
 local MiB=1048576
+local function remoteEntry(entry)
+ local out={};for _,key in ipairs{'id','name','parent_id','is_folder','size','created_time','modified_time','checksum','version','etag','mime_type','first_seen'}do out[key]=entry[key]end
+ return out
+end
 local function errorValue(code,message)return {code=code,message=message}end
 function Core.new(o)
  local self=setmetatable({storage=o.storage,jobs=o.jobs,credentials=o.credentials,provider_factory=o.provider_factory,settings=o.settings or {},onchange=o.onchange,waiters={},active_id=nil},Core)
@@ -12,11 +17,21 @@ function Core.new(o)
  local saved,readerr=self.storage:readJSON(self.index_path,256*MiB)
  if not saved and self.storage:exists(self.index_path)then error('Cannot read durable index; existing progress was preserved: '..tostring(readerr))end
  self.state=saved or {}
+ if self.state.books_dir and self.storage.books_dir then self.storage.books_dir=self.state.books_dir;self.settings.books_dir=self.state.books_dir end
  if self.storage.cleanupDownloads then self.storage:cleanupDownloads(self.state.entries or {})end
- for _,k in ipairs{'entries','docs','folders','sync','downloads','summaries','last_opened'}do self.state[k]=self.state[k] or {} end
+ for _,k in ipairs{'entries','docs','folders','sync','downloads','summaries','last_opened','listings','history','folder_types','folder_pins'}do self.state[k]=self.state[k] or {} end
  for _,k in ipairs{'pending','bases','conflicts'}do self.state.sync[k]=self.state.sync[k] or {} end
+ if self.storage.books_dir and self.state.archive_layout~=2 then
+  -- Archive layout v1 is intentionally retired; durable reading/sync data stays.
+  for id,e in pairs(self.state.entries)do if e.pool~='meta'then self.state.entries[id]=nil end end
+  self.state.archive_layout=2
+ end
  self.jobs:setOffline(self.settings.offline==true)
+ if self.storage.books_dir then require('gdriveshelf/relocation').recover(self,o.current_path)end
  return self
+end
+function Core:stopRelocation()
+ if self.relocating then self.jobs:cancel('relocate')end
 end
 function Core:save()return self.storage:writeJSON(self.index_path,self.state)end
 function Core:emit(kind,entry,err)if self.onchange then self.onchange(kind,entry,err)end end
@@ -30,17 +45,17 @@ function Core:provider()return self.provider_factory(self.credentials)end
 function Core:sync(provider)
  return Sync.new{provider=provider or {},sdr=SDR,storage=self.storage,state=self.state.sync,offline=self.settings.offline}
 end
-function Core:network(key,work,done,front,before)
+function Core:network(key,work,done,front,before,progress)
  if not self:online() then return false end
- return self.jobs:enqueue(key,function()
-  local p=self:provider();local value,err=work(p)
+ return self.jobs:enqueue(key,function(report)
+  local p=self:provider();local value,err=work(p,report)
   if value and type(value)=='table' then value.data=nil end -- Native SDR survives JSON transport as Lua literals.
   return {result=value,credentials=p.credentials},err
  end,function(envelope,err)
   if envelope and envelope.credentials then self.credentials=envelope.credentials;if self.oncredentials then self.oncredentials(self.credentials)end end
   local result=envelope and envelope.result
   if not result then
-   if err and err.code~='cancelled' and err.code~='paused' and err.code~='space' and err.code~='limit' and err.code~='ambiguous_stem' and err.code~='ambiguous_sidecar' and err.code~='ambiguous_metadata' then self.retry_after=os.time()+30
+   if err and err.code~='cancelled' and err.code~='paused' and err.code~='space' and err.code~='limit' and err.code~='preview' and err.code~='range' and err.code~='ambiguous_stem' and err.code~='ambiguous_sidecar' and err.code~='ambiguous_metadata' then self.retry_after=os.time()+30
     if self.jobs.schedule then self.jobs.schedule(function()if self:online()then self:resume()end end,31)end
    end
    if done then done(nil,err or errorValue('network','Network request failed'))end
@@ -51,10 +66,10 @@ function Core:network(key,work,done,front,before)
   if not self:online()then return nil,errorValue('paused','Network requests are paused')end
   if before then return before()end
   return true
- end)
+ end,progress)
 end
 function Core:cache()
- return Cache.new{entries=self.state.entries,auto_limit=(self.settings.auto_mib or 3072)*MiB,meta_limit=(self.settings.meta_mib or 256)*MiB,reserve=512*MiB,free_bytes=function()return self.storage:freeBytes()end}
+ return Cache.new{entries=self.state.entries,auto_limit=(self.settings.auto_mib or 3072)*MiB,meta_limit=(self.settings.meta_mib or 256)*MiB,reserve=512*MiB,free_bytes=function(pool)return self.storage:freeBytes(pool=='meta'and self.storage.root or self.storage.books_dir)end,volume=self.storage.volume and function(pool)return self.storage:volume(pool=='meta'and self.storage.root or self.storage.books_dir)end}
 end
 function Core:protected()
  local p={};if self.active_id then p[self.active_id]=true end
@@ -65,6 +80,7 @@ end
 function Core:evict(ids)
  for _,id in ipairs(ids)do local e=self.state.entries[id];if e then
   local ok=self.storage:remove(e.path)
+  if e.preview_path then self.storage:remove(e.preview_path)end
   if ok or not self.storage:exists(e.path)then self.state.entries[id]=nil end
  end end
  return self:save()
@@ -76,20 +92,36 @@ function Core:cached(id)
 end
 function Core:cachedList(parent)
  local cached=self:cached('list:'..parent)
- if cached then local d=self.storage:readJSON(cached.path);if d then return d end end
+ if cached then local d=self.storage:readJSON(cached.path);if d then local list={};for _,e in ipairs(d)do list[#list+1]=remoteEntry(e)end;return list end end
+ local listing=(self.state.listings or {})[parent]
+ if listing and listing.complete then
+  local entries={};for _,id in ipairs(listing.ids or {})do local e=self.state.docs[id]or self.state.folders[id];if e then entries[#entries+1]=e end end
+  return entries
+ end
  local entries={}
  for _,e in pairs(self.state.docs)do if e.parent_id==parent then entries[#entries+1]=e end end
  for _,e in pairs(self.state.folders)do if e.parent_id==parent then entries[#entries+1]=e end end
  return Library.ordered(entries,self.settings.sort,self.settings.reverse,self.natural)
 end
 function Core:rememberList(parent,entries)
+ local stale={}
+ local clean={};for _,e in ipairs(entries)do clean[#clean+1]=remoteEntry(e)end;entries=clean
+ local ids={};for _,e in ipairs(entries)do ids[#ids+1]=e.id end
+ self.state.listings[parent]={complete=true,checked_at=os.time(),ids=ids}
  for _,e in ipairs(entries)do e.parent_id=e.parent_id or parent
   if e.is_folder then
    local old=self.state.folders[e.id];e.first_seen=old and old.first_seen or os.time()
    e.created_time=e.created_time or (old and old.created_time) or os.date('!%Y-%m-%dT%H:%M:%SZ',e.first_seen)
    self.state.folders[e.id]=e
-  else self.state.docs[e.id]=e end
+  else
+   local localPath=(self.state.docs[e.id]or {}).local_path
+   local durable=remoteEntry(e);durable.local_path=localPath
+   self.state.docs[e.id]=durable
+   local thumb=self.state.entries['thumb:'..e.id]
+   if thumb and thumb.source_stamp~=Metadata.fingerprint(e)then stale[#stale+1]='thumb:'..e.id end
+  end
  end
+ if #stale>0 then self:evict(stale)end
  local text=self.storage.json.encode(entries);local id='list:'..parent
  local victims=self:cache():plan('meta',#text,self:protected(),id)
  if victims then
@@ -102,7 +134,7 @@ function Core:rememberList(parent,entries)
 end
 function Core:folder(parent,name,callback,force)
  self.state.folders[parent]=self.state.folders[parent] or {id=parent,name=name or parent,is_folder=true}
- local cached=self:cachedList(parent);if #cached>0 or not self:online()then callback(cached,true)end
+ local cached=self:cachedList(parent);if self.state.listings[parent]or #cached>0 or not self:online()then callback(cached,true)end
  if not self:online()then return end
  self.folder_waiters=self.folder_waiters or {};self.folder_waiters[parent]=self.folder_waiters[parent]or{}
  self.folder_waiters[parent][#self.folder_waiters[parent]+1]=callback
@@ -110,21 +142,22 @@ function Core:folder(parent,name,callback,force)
   local listeners=self.folder_waiters[parent]or{};self.folder_waiters[parent]=nil
   if entries then self:rememberList(parent,entries)end
   for _,fn in ipairs(listeners)do fn(entries,false,err)end
-  if entries then self:metadata(entries);self:flushPending()end
+  if entries then self:metadata(entries);self:flushPending();if parent==self.settings.home then self:indexHome(force);if self.settings.beta_auto_scan then self:deepScan({id=parent},true)end end end
  end,true)
 end
 function Core:metadata(entries)
  for _,e in ipairs(entries)do
   local n=e.name:lower()
-  if not e.is_folder and (n=='cover.jpg' or n=='index.json' or n=='series.json')then
+  if not e.is_folder and ((n=='cover.jpg'and self.settings.load_covers~=false)or ((n=='index.json'or n=='series.json')and self.settings.load_metadata~=false))then
    local old=self:cached(e.id)
-   if not old or old.modified_time~=e.modified_time then self:download(e,'meta')end
+   if not old or old.modified_time~=e.modified_time or old.version~=e.version or(n=='cover.jpg'and not old.preview_path)then self:download(e,'meta')end
   end
  end
 end
 function Core:download(entry,pool,callback)
+ self:stopRelocation()
  local old=self:cached(entry.id)
- if old and (pool~='meta' or old.modified_time==entry.modified_time)then
+ if old and(pool~='meta'or(old.modified_time==entry.modified_time and old.version==entry.version and(entry.name:lower()~='cover.jpg'or old.preview_path)))then
   if pool=='offline' then old.pool='offline'end;self.state.downloads[entry.id]=nil;self:save()
   if callback then callback(old.path)end;return true
  end
@@ -134,6 +167,7 @@ function Core:download(entry,pool,callback)
  self:save()
  if not self:online()then return false end
  local request=self.state.downloads[entry.id]
+ entry.parent_name=(self.state.folders[entry.parent_id]or{}).name or entry.parent_name
  local path=(old and old.path) or self.storage:filePath(entry,pool)
  local incoming=path..'.incoming-'..tostring(self.jobs.nonce or 'test')
  local function before()
@@ -145,13 +179,22 @@ function Core:download(entry,pool,callback)
   self:evict(victims);self.downloading_id=entry.id;self:emit('download',entry)
   return true
  end
- return self:network('download:'..entry.id,function(p)
-  local downloaded,err=p:download(entry,incoming,pool=='meta' and 8*MiB or nil)
+ return self:network('download:'..entry.id,function(p,report)
+  local downloaded,err=p:download(entry,incoming,pool=='meta' and 8*MiB or nil,report)
   if not downloaded then return nil,err end
   local current,se=p:stat(entry.id)
   if not current then return nil,se end
   if current.parent_id~=entry.parent_id or current.name~=entry.name or not SDR.sameBook(entry,current)then
    return nil,errorValue('changed','Source changed during download; retry from a refreshed folder')
+  end
+  if pool=='meta'and (entry.name=='index.json'or entry.name=='series.json')then
+   local data=self.storage:readJSON(incoming,8*MiB);if data then downloaded.parsed=Metadata.normalize(data,entry.name=='index.json'and 'index'or 'series')end
+  end
+  if pool=='meta'and entry.name:lower()=='cover.jpg'then
+   local data=self.storage:read(incoming,8*MiB)
+   local preview,err=require('gdriveshelf/thumbnails').render(data or '',incoming..'.png')
+   if not preview then return nil,err end
+   downloaded.preview_path=preview.path;downloaded.preview_size=self.storage:size(preview.path)
   end
   downloaded.entry=current;return downloaded
  end,function(result,err)
@@ -162,21 +205,30 @@ function Core:download(entry,pool,callback)
   end
   if result then
    local e={};for k,v in pairs(result.entry or entry)do e[k]=v end
-   e.pool=request.pool;e.path=path;e.ready=true;e.size=result.size or tonumber(entry.size);e.last_access=os.time()
+   if result.preview_path then
+    local preview=path:match('^(.*)/')..'/cover-preview.png'
+    if os.rename(result.preview_path,preview)then e.preview_path=preview;e.preview_size=result.preview_size end
+   end
+   e.parsed=result.parsed;e.pool=request.pool;e.path=path;e.ready=true;e.size=(result.size or tonumber(entry.size))+(e.preview_size or 0);e.last_access=os.time()
    self.state.entries[entry.id]=e;self.state.downloads[entry.id]=nil
-   if pool~='meta'then self.state.docs[entry.id]=entry end
-  else self.storage:remove(incoming);self.storage:remove(incoming..'.part');request.error=err and err.message end
+   if pool~='meta'then entry.local_path=path;self.state.docs[entry.id]=entry end
+  else self.storage:remove(incoming);self.storage:remove(incoming..'.part');self.storage:remove(incoming..'.png');request.error=err and err.message end
   self:save()
   local callbacks=self.waiters[entry.id] or {};self.waiters[entry.id]=nil
   for _,fn in ipairs(callbacks)do fn(result and path,err)end
   self:emit(result and 'downloaded' or 'error',entry,err)
- end,pool~='meta' and callback~=nil,before)
+ end,pool~='meta' and callback~=nil,before,function(value)
+  self.transfer=self.transfer or {};self.transfer[entry.id]=value;self:emit('transfer',entry)
+ end)
 end
 function Core:open(entry,callback)
+ self:stopRelocation()
  local cached=self:cached(entry.id)
  if cached then self.opening_id=entry.id;self:save();callback(cached.path);return end
  if not self:online()then callback(nil,errorValue('offline','This file is not downloaded. Enable online mode or reconnect.'));return end
  self.opening_id=entry.id
+ if self.index_job then self:cancelIndex()end
+ if self.deep_job then self:cancelDeepScan()end
  local active=self.jobs.active
  local old_id=active and active.key:match('^download:(.+)$')
  local prefetch=old_id and self.state.downloads[old_id]
@@ -188,10 +240,10 @@ function Core:open(entry,callback)
  if suspended~=nil then self.jobs.offline=suspended;self.jobs:pump()end
 end
 function Core:prefetch(entry)
- if not self:online()then return end
+ if not self:online()or (Catalog.kind(entry,self.state)=='books'and not self.settings.prefetch_books)then return end
  local list=self:cachedList(entry.parent_id)
  for _,next_entry in ipairs(Library.next(list,entry.id,self.settings.prefetch or 1,self.settings.sort,self.settings.reverse,self.natural))do
-  if not self:cached(next_entry.id)then self:download(next_entry,'auto')end
+  if (self.settings.prefetch_books or Catalog.kind(next_entry,self.state)=='comics')and not self:cached(next_entry.id)then self:download(next_entry,'auto')end
  end
 end
 function Core:next(entry)
@@ -201,22 +253,35 @@ function Core:cancelDownload(id)
  self.state.downloads[id]=nil;self.jobs:cancel('download:'..id);self.state.downloads[id]=nil;self:save()
 end
 function Core:clearPool(pool)
+ self:stopRelocation()
  local victims={};local keep=self:protected()
  for id,e in pairs(self.state.entries)do if e.pool==pool and not keep[id]then victims[#victims+1]=id end end
  self:evict(victims);self:emit('cleared');return #victims
 end
 function Core:removeFile(id)
+ self:stopRelocation()
  if self:protected()[id]then return nil,'This document is active'end
  self:cancelDownload(id);self:evict({id});return true
+end
+function Core:thumbnail(entry)
+ local thumb=self:cached('thumb:'..entry.id)
+ return thumb and thumb.source_stamp==Metadata.fingerprint(entry)and thumb or nil
 end
 function Core:titleInfo(parent)
  local entries=self:cachedList(parent);local info={title=(self.state.folders[parent]or{}).name or parent,chapters={}}
  info.progress=Library.folderProgress(entries,self.state.summaries,self.state.sync.pending)
  for _,e in ipairs(entries)do
-  if e.name=='index.json' or e.name=='series.json'then
-   local c=self:cached(e.id);local data=c and self.storage:readJSON(c.path)
-   if data then local parsed=Metadata.normalize(data,e.name=='index.json' and 'index' or 'series');for k,v in pairs(parsed)do if v~=nil and v~=''then info[k]=v end end end
-  elseif e.name:lower()=='cover.jpg'then local c=self:cached(e.id);if c then info.cover_path=c.path end end
+  if self.settings.load_metadata~=false and (e.name=='index.json' or e.name=='series.json')then
+   local c=self:cached(e.id);local data=c and not c.parsed and self.storage:readJSON(c.path)
+   if c and(c.parsed or data)then local parsed=c.parsed or Metadata.normalize(data,e.name=='index.json' and 'index' or 'series');for k,v in pairs(parsed)do if v~=nil and v~=''then info[k]=v end end end
+  elseif self.settings.load_covers~=false and e.name:lower()=='cover.jpg'then local c=self:cached(e.id);if c then info.cover_path=c.preview_path or c.path end end
+ end
+ if not info.cover_path and self.settings.load_covers~=false and self.settings.beta_thumbnails then
+  for _,entry in ipairs(Library.ordered(entries,'natural'))do
+   if entry.name:lower():match('%.cbz$')then
+    local thumb=self:thumbnail(entry);if thumb then info.cover_path=thumb.path end;break
+   end
+  end
  end
  return info
 end
@@ -286,15 +351,58 @@ function Core:remote(entry)
  local c=self:cached('sdr:'..entry.id);return c and self.storage:readJSON(c.path)
 end
 function Core:resume()
+ if self.relocating then return end
  for _,d in pairs(self.state.downloads)do self:download(d.entry,d.pool)end
  self:flushPending()
 end
+function Core:cancelIndex()
+ local job=self.index_job;self.index_job=nil
+ if job and job.active and self.jobs.cancel then self.jobs:cancel('index:'..job.active)end
+ self:emit('indexed')
+end
+function Core:indexHome(force)
+ local home=self.settings.home
+ if (not self.settings.index_enabled and not force)or not home or home=='root'or not self:online()then return end
+ if self.index_job then return end
+ local queue={}
+ for _,folder in ipairs(self:cachedList(home))do
+  if folder.is_folder and not Metadata.isService(folder)and (force or Catalog.due(self.state.listings[folder.id],os.time(),self.settings))then queue[#queue+1]=folder end
+ end
+ local job={queue=queue,total=#queue,done=0};self.index_job=job
+ local function advance()
+  if self.index_job~=job then return end
+  if not self:online()or(not self.settings.index_enabled and not force)then self:cancelIndex();return end
+  local folder=table.remove(queue,1)
+  if not folder then self.index_job=nil;self:emit('indexed');return end
+  job.active=folder.id;self:emit('indexing',folder)
+  self:network('index:'..folder.id,function(p)return p:list(folder.id)end,function(entries,err)
+   if self.index_job~=job then return end
+   if entries then self:rememberList(folder.id,entries);self:metadata(entries)end
+   job.done=job.done+1;job.error=err;advance()
+  end,false)
+ end
+ advance()
+end
+function Core:folderStats(parent)return Catalog.stats(self,parent)end
+function Core:recordOpen(entry)
+ Catalog.recordOpen(self.state,entry,os.time());return self:save()
+end
+function Core:history()return Catalog.history(self.state)end
+function Core:cancelFolderScan()
+ local job=self.folder_scan;self.folder_scan=nil;if job and job.key then self.jobs:cancel(job.key)end
+ self:emit('scan_cancelled')
+end
 function Core:scanFolder(folder,callback)
+ self:cancelFolderScan();local job={done=0,files=0};self.folder_scan=job
  local files,visited,total={}, {},0
  local function visit(entry,done)
+  if self.folder_scan~=job then return end
+  job.key='scan:'..entry.id;self:emit('folder_scanning',entry)
   if visited[entry.id]then done();return end;visited[entry.id]=true
   self:network('scan:'..entry.id,function(p)return p:list(entry.id)end,function(entries,err)
-   if not entries then callback(nil,err);return end
+   if self.folder_scan~=job then return end
+   if not entries then self.folder_scan=nil;callback(nil,err);return end
+   job.done=job.done+1
    self:rememberList(entry.id,entries)
    local dirs={}
    for _,e in ipairs(entries)do
@@ -305,11 +413,13 @@ function Core:scanFolder(folder,callback)
   end)
  end
  if not self:online()then callback(nil,errorValue('offline','Folder discovery requires online mode'));return end
- visit(folder,function()callback({files=files,size=total})end)
+ visit(folder,function()self.folder_scan=nil;callback({files=files,size=total})end)
 end
 function Core:offlineFolders()
  local groups=Library.offlineGroups(self.state.entries);local out={}
  for parent in pairs(groups)do local folder=self.state.folders[parent]or{id=parent,name=parent,is_folder=true};out[#out+1]=folder end
  return Library.ordered(out,self.settings.sort,self.settings.reverse,self.natural)
 end
+require('gdriveshelf/scanning')(Core)
+require('gdriveshelf/relocation').install(Core)
 return Core

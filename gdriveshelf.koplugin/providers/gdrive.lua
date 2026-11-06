@@ -98,6 +98,7 @@ local function default_transport(ca_file)
             end
             if not status then error('invalid HTTP status') end
             local response_headers=h:receiveheaders()
+            if r.validate_headers and not r.validate_headers(status,response_headers)then h:close();return status,response_headers end
             if status>=200 and status<300 and status~=204 then h:receivebody(response_headers,sink) end
             h:close()
             return status,response_headers
@@ -140,6 +141,7 @@ function Provider:_send(r, limit, consumer)
     r.headers=r.headers or {}; r.headers['Accept-Encoding']='identity'
     r.sink=function(chunk, why)
         if not chunk then if why then sink_error=err('network','Incomplete network response') end; return sink_error and nil or 1 end
+        if r.validate_headers and not r._headers_validated then sink_error=err('range','Range response headers were not validated');return nil,'invalid range headers'end
         total=total+#chunk
         if total>limit then sink_error=err('too_large','Response exceeds the size limit'); return nil,'response too large' end
         if consumer then
@@ -155,6 +157,7 @@ function Provider:_send(r, limit, consumer)
         local code=status==412 and 'conflict' or (status==401 and 'unauthorized' or (status==404 and 'not_found' or 'api'))
         return nil,err(code, status==412 and 'Remote file changed; preserve both versions' or ('Drive request failed (HTTP '..status..')'),status)
     end
+    if r.validate_headers and not r.validate_headers(status,headers or {})then return nil,err('range','Partial download is unavailable or invalid',status)end
     if type(body)=='string' and not sink_error then r.sink(body) end
     if sink_error then return nil,sink_error end
     return {body=consumer and nil or table.concat(chunks),headers=headers or {},size=total}
@@ -279,16 +282,34 @@ local function file_md5(path)
     return ((le(a)..le(b)..le(c)..le(d)):gsub('.',function(x) return string.format('%02x',x:byte()) end))
 end
 
-function Provider:download(entry,path,max_bytes)
+-- Strict partial media reads. Validation happens before the streaming body.
+function Provider:range(entry,first,last,max_bytes)
+ local size=entry and tonumber(entry.size)
+ if not size or not byte_limit(first)or not byte_limit(last)or first~=math.floor(first)or last~=math.floor(last)or first>last or last>=size or (first==0 and last==size-1)or not byte_limit(max_bytes)or last-first+1>max_bytes then
+  return nil,err('range','Invalid or complete-file range refused')
+ end
+ local r={url=API..'/'..escape(entry.id)..'?alt=media&supportsAllDrives=true',method='GET',headers={Range='bytes='..first..'-'..last}}
+ r.validate_headers=function(status,headers)
+  local a,b,total=tostring(header(headers,'content-range')or ''):match('^bytes (%d+)%-(%d+)/(%d+)$')
+  local valid=status==206 and tonumber(a)==first and tonumber(b)==last and tonumber(total)==size and (not header(headers,'content-encoding')or header(headers,'content-encoding')=='identity')
+  r._headers_validated=valid;return valid
+ end
+ local result,e=self:_request(r,last-first+1)
+ if not result then return nil,e end
+ if result.size~=last-first+1 then return nil,err('range','Incomplete partial response')end
+ return result.body
+end
+function Provider:download(entry,path,max_bytes,progress)
     if type(entry)~='table' or not valid(entry.id) or not valid(path) then return nil,err('invalid_argument','A file and destination are required') end
     max_bytes=max_bytes or entry.size
     if not byte_limit(max_bytes) then return nil,err('invalid_argument','A download byte limit is required') end
     if entry.size and entry.size>max_bytes then return nil,err('too_large','File exceeds the size limit') end
     local part=path..'.part'
     local f=io.open(part,'wb'); if not f then return nil,err('io','Cannot create partial download') end
-    local function reset() f:close(); f=io.open(part,'wb'); return f~=nil end
+    local received=0
+    local function reset() received=0;f:close(); f=io.open(part,'wb'); return f~=nil end
     local result,e=self:_request({url=API..'/'..escape(entry.id)..'?alt=media&supportsAllDrives=true',method='GET'},max_bytes,
-        function(chunk) return f:write(chunk) end, reset)
+        function(chunk) received=received+#chunk;if progress then progress{received=received,total=entry.size,stage='download'}end;return f:write(chunk) end, reset)
     local closed=f and f:close()
     if result and not closed then result=nil; e=err('io','Cannot flush download') end
     if result and entry.size and result.size~=entry.size then result=nil; e=err('size_mismatch','Downloaded size differs from metadata') end
@@ -298,6 +319,7 @@ function Provider:download(entry,path,max_bytes)
     end
     if not result then os.remove(part); return nil,e end
     if not os.rename(part,path) then os.remove(part); return nil,err('io','Cannot publish completed download') end
+    if progress then progress{received=result.size,total=entry.size,stage='complete'}end
     return {path=path,size=result.size,checksum=entry.checksum,version=entry.version}
 end
 

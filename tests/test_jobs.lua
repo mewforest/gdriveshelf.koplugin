@@ -34,3 +34,15 @@ H.test('foreground priority promotes an already queued prefetch target',function
  j:enqueue('D',function()error('existing task must be retained')end,function()end,true)
  H.eq(j.queue[1].key,'D');H.eq(j.queue[2].key,'C')
 end)
+H.test('worker progress is bounded data and reaches the parent without waiting for completion',function()
+ local records={};local task
+ local j=Jobs.new{dir='/jobs',storage={remove=function()end,writeJSON=function(_,p,v)records[p]=v;return true end,readJSON=function(_,p)return records[p]end},backend={start=function(fn)task=fn;return 1 end,done=function()return false end},schedule=function()end}
+ local seen;j:enqueue('a',function(report)report{received=17,total=30,stage='download'}end,function()end,false,nil,function(v)seen=v end)
+ task();j:poll();assert(seen and seen.received==17 and seen.total==30)
+end)
+H.test('local relocation jobs run offline while network jobs stay queued',function()
+ local j,finish=setup();j:setOffline(true);local done=false
+ j:enqueue('network',function()return 1 end,function()end)
+ j:enqueue('relocate',function()return true end,function()done=true end,true,nil,nil,true)
+ assert(j.active and j.active.key=='relocate');finish();assert(done and not j.active and j.keys.network)
+end)
