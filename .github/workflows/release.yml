@@ -1,0 +1,57 @@
+name: Test and release
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gdriveshelf-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install test runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes luajit python3
+      - name: Check, test and package
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: make package VERSION="0.1.${BUILD_NUMBER}"
+
+  release:
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Build allowlisted release archive
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: python3 tools/package.py --version "0.1.${BUILD_NUMBER}"
+      - name: Publish release and checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          version="0.1.${BUILD_NUMBER}"
+          gh release create "v${version}" \
+            "dist/gdriveshelf.koplugin-${version}.zip" \
+            "dist/gdriveshelf.koplugin-${version}.zip.sha256" \
+            --target "$TARGET_SHA" --generate-notes \
+            --title "GDriveShelf ${version}"

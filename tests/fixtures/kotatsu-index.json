@@ -1,0 +1,81 @@
+{
+  "id": 100000000000000001,
+  "title": "Лунная линия",
+  "alt_titles": [
+    "Moonline"
+  ],
+  "url": "demo-series",
+  "public_url": "https://example.org/moonline",
+  "author": "Demo Author",
+  "authors": [
+    "Demo Author"
+  ],
+  "cover": "https://example.org/moonline/cover.jpg",
+  "description": "Ночной поезд везёт ученицу картографа через долину уснувших станций.",
+  "rating": -1,
+  "content_rating": "SAFE",
+  "nsfw": false,
+  "state": "FINISHED",
+  "source": "DEMO",
+  "tags": [
+    {
+      "key": "fantasy",
+      "title": "Фантастика"
+    }
+  ],
+  "chapters": {
+    "100000000000000002": {
+      "number": 1,
+      "volume": 1,
+      "url": "demo-chapter-1",
+      "name": "Глава 1",
+      "uploadDate": 1700000000001,
+      "scanlator": "Demo",
+      "entries": "00000000_0001\\d{4}",
+      "file": "01.cbz"
+    },
+    "100000000000000003": {
+      "number": 2,
+      "volume": 1,
+      "url": "demo-chapter-2",
+      "name": "Глава 2",
+      "uploadDate": 1700000000002,
+      "scanlator": "Demo",
+      "entries": "00000000_0002\\d{4}",
+      "file": "02.cbz"
+    },
+    "100000000000000004": {
+      "number": 3,
+      "volume": 1,
+      "url": "demo-chapter-3",
+      "name": "Глава 3",
+      "uploadDate": 1700000000003,
+      "scanlator": "Demo",
+      "entries": "00000000_0003\\d{4}",
+      "file": "03.cbz"
+    },
+    "100000000000000005": {
+      "number": 4,
+      "volume": 1,
+      "url": "demo-chapter-4",
+      "name": "Глава 4",
+      "uploadDate": 1700000000004,
+      "scanlator": "Demo",
+      "entries": "00000000_0004\\d{4}",
+      "file": "04.cbz"
+    },
+    "100000000000000006": {
+      "number": 5,
+      "volume": 1,
+      "url": "demo-chapter-5",
+      "name": "Глава 5",
+      "uploadDate": 1700000000005,
+      "scanlator": "Demo",
+      "entries": "00000000_0005\\d{4}",
+      "file": "05.cbz"
+    }
+  },
+  "app_id": "io.github.kotatsuredo.kotatsu",
+  "app_version": 2033,
+  "cover_entry": "cover.jpg"
+}

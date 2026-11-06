@@ -1,0 +1,12 @@
+.DS_Store
+.superpowers/
+build/
+*.pyc
+__pycache__/
+credentials*.json
+*refresh_token*
+*.part
+docs/superpowers/
+docs/implementation-progress.md
+
+dist/

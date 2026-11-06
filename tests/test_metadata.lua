@@ -1,0 +1,7 @@
+local H=require('tests/helper'); local M=require('metadata')
+H.test('Kotatsu chapter labels and tags normalized',function()local m=M.normalize({title='Лунная линия',authors={'Demo Author'},description='Desc',tags={{title='Фантастика'}},chapters={['9999999999999999']={file='1.cbz',name='Глава 1'}},cover_entry='cover.jpg'},'index'); H.eq(m.title,'Лунная линия'); H.eq(m.author,'Demo Author');H.eq(m.chapters['1.cbz'],'Глава 1');H.eq(m.tags,'Фантастика') end)
+H.test('Mylar series metadata normalized',function() local m=M.normalize({metadata={name='Series',description_text='Text',publisher='Press',year=2000}},'series');H.eq(m.title,'Series');H.eq(m.description,'Text') end)
+H.test('service folders hidden and explicit toggle restores',function() local e={{name='a.sdr',is_folder=true},{name='cover.jpg'},{name='index.json'},{name='series.json'},{name='1.cbz'}}; H.eq(#M.visible(e,false),1);H.eq(#M.visible(e,true),5) end)
+H.test('untrusted metadata values do not become paths or commands',function() local m=M.normalize({title={},authors='Author',chapters={x={file='../a.cbz',name='bad'}},cover_entry='../../secret'},'index'); H.eq(m.title,nil);H.eq(m.cover,'cover.jpg');H.eq(m.chapters['../a.cbz'],nil) end)
+H.test('provider file entries explicitly set is_folder false',function() H.eq(M.isService({id='book',name='1.cbz',is_folder=false,parent_id='title'}),false);H.eq(#M.visible({{name='1.cbz',is_folder=false}},false),1) end)
+print('metadata tests passed')
