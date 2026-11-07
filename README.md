@@ -7,6 +7,10 @@
 
 Google Drive Shelf is an unofficial KOReader plugin. It downloads a complete document before opening it with KOReader's native reader, so your usual reading modes, cropping, zoom and end-of-document actions remain available. English and Russian interfaces follow KOReader's language setting.
 
+| Library | Comic folder and background download | Storage and cache |
+| :---: | :---: | :---: |
+| Manga library in a three-column grid | Comic folder with a cover, Continue button, chapters and background download | Storage and cache with usage bars and cleanup actions |
+
 ## Get started
 
 1. Download **`gdriveshelf.koplugin-<version>.zip`** from [Releases](../../releases).
@@ -35,15 +39,11 @@ Open **Google Drive Shelf** directly from KOReader's right-hand menu tab in the 
 
 The folder toolbar separates navigation, refresh, sorting, display mode and actions. Folder and file sorting are independent and persist across restarts. Folder pins stay above other items; optionally, known folders follow them. Pinning a folder to the top does **not** download it.
 
-<p align="center">A six-card Google Drive Shelf library in three columns and two rows</p>
-
 New installations use a **3×2 folder grid** and a **chapter list**. Switch chapters to tiles to use their independent grid preset. Existing display choices are retained.
 
-| Folder library | Folder tiles |
+| Folder list | Settings |
 | --- | --- |
-| Folders with cached information | Folder cards with covers or centered names |
-| Settings | Storage |
-| Grouped plugin settings | Storage pools and disk usage |
+| Folders with cached information | Grouped plugin settings |
 
 Long-press a file or folder for downloads and other actions. The selection mode lets you keep several files offline at once. Folder cards show the downloaded count and size at the upper left, with the known total count and size at the upper right. Folder and chapter grids have independent layout presets. Containers show a subfolder count instead. Confirmed empty folders are hidden by default; unknown folders remain visible. A rough opened-chapter bar summarizes reading activity. Unknown counts remain unknown; a matching `.sdr` indicates an opened document, not a completed chapter.
 
@@ -52,10 +52,6 @@ Long-press a file or folder for downloads and other actions. The selection mode 
 | Folder actions and offline downloads | Cover and descriptive metadata |
 
 Plugin history groups comics by folder and keeps ordinary books as individual entries. CBZ/CBR/CB7 are detected as comics; other formats are books. A folder's **Content type** can override this, including for PDF comics. History survives archive eviction.
-
-| Cached-document tiles | Background activity |
-| --- | --- |
-| Stable local previews with remote experiments disabled | Background download activity opens the queue |
 
 ## Downloads and offline reading
 
@@ -85,9 +81,9 @@ The comic-folder header shows the cover, description and known document totals. 
 
 **Edit folder information** changes the title, description or cover. Edits take effect locally, queue safely while offline, and sync to a separate versioned `gdriveshelf.json` plus immutable cover files. Original `index.json`, `series.json`, `cover.jpg` and native progress are preserved. Conflicting edits retain both versions for a choice under **Downloads and sync**. The editor previews the current cover and lets you import an image, reset to the automatic cover, hide it, or choose a page from a downloaded volume. The quick first-page action can also read a remote CBZ through bounded byte ranges.
 
-| Comic folder | Cover editor | Page gallery |
+| Chapter tiles | Cover editor | Page gallery |
 | --- | --- | --- |
-| Comic header and reading list | Metadata editor with current cover | Choosing a cover page |
+| Chapter tiles with a cached cover | Metadata editor with current cover | Choosing a cover page |
 
 Optional **Index home folder recursively** asks for explicit consent and scans the selected home tree, excluding SDR contents. Documents are never downloaded for this catalog. After the first pass, ordinary refresh uses the [Drive change log](https://developers.google.com/workspace/drive/api/guides/manage-changes), with checks on catalog entry and wake limited to once per 30 seconds; manual Refresh checks immediately. **Reindex library** opens a progress screen for a repair pass. Pause it and resume from the saved checkpoint, or let it continue in the background. No shared cloud tree manifest is created. Covers and descriptions are separate low-priority tasks.
 

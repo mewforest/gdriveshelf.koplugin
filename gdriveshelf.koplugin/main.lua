@@ -497,8 +497,25 @@ function Shelf:showQueue()
  for id,conflict in pairs(self.core.state.sync.conflicts)do if not self.core.state.sync.pending[id]then local e=self.core.state.docs[id];if e then rows[#rows+1]={text=tr("Conflict: ")..e.name,callback=function()self:showConflict(e)end}end end end
  self:menu(tr("Downloads and sync"),rows)
 end
-function Shelf:actionNotification(text,action)
- local notice=require('ui/widget/notification'):new{text=text,timeout=6,toast=false}
+function Shelf:actionNotification(text,action,label)
+ local notice=require('ui/widget/notification'):new{text=label and text..' · '..label or text,timeout=6,toast=false}
+ if label then
+  local screen=require('device').screen
+  local Text=require('ui/widget/textwidget')
+  local Span=require('ui/widget/horizontalspan')
+  local gap=screen:scaleBySize(10)
+  local caption=Text:new{text=label,face=notice.face,bold=true}
+  local arrow=require('ui/widget/iconwidget'):new{icon='chevron.right',width=caption:getSize().h,height=caption:getSize().h}
+  local frame=notice.frame
+  local body=Text:new{text=text,face=notice.face,
+   max_width=screen:getWidth()-2*(frame.margin+frame.padding+frame.bordersize)-3*gap-caption:getSize().w-arrow:getSize().w}
+  local row=require('ui/widget/horizontalgroup'):new{align='center',body,Span:new{width=gap},caption,arrow}
+  frame[1]:free()
+  frame[1]=row
+  frame.padding_right=frame.padding+gap
+  notice[1][1].height=frame:getSize().h*(notice._shown_idx-1)+notice.margin
+  notice[1]:resetLayout()
+ end
  notice.onTapClose=function(owner,_,gesture)
   local inside=gesture and owner.frame and owner.frame.dimen and not gesture.pos:notIntersectWith(owner.frame.dimen)
   ui():close(owner)

@@ -436,7 +436,7 @@ return function(Shelf,env)
   local screen=require('device').screen
   local summary
   if view.header then
-   summary={cover_path=info.cover_path,text=info.title or folder.name,description=info.description,stats=view.stats,cached=view.cached,height=math.floor(screen:getHeight()*.235)}
+   summary={cover_path=info.cover_path,text=info.title or folder.name,description=info.description,stats=view.stats,cached=view.cached,height=math.floor(screen:getHeight()*.30)}
   end
   local resume=visit.resume
   local resumeButton
@@ -444,10 +444,15 @@ return function(Shelf,env)
    local target=resume.entry
    local label=self:chapterLabel(target,info)
    local history=(core.state.history or {})[target.id]
-   local time=math.max(tonumber(history and history.time) or 0,resume.remote_time or 0)
+   local opened=tonumber(history and history.time) or 0
+   local date
+   if opened>0 then
+    date=string.format(tr('Last opened: %s'),os.date('%d.%m %H:%M',opened))
+   elseif resume.remote_time and resume.remote_time>0 then
+    date=string.format(tr('Progress updated: %s'),os.date('%d.%m %H:%M',resume.remote_time))
+   end
    if resume.summary and resume.summary.status=='complete'then label=label..' · '..tr('Read')end
-   if time>0 then label=label..' · '..os.date('%d.%m %H:%M',time)end
-   resumeButton={text=tr(resume.resume and 'Continue'or 'Read chapter'),detail=label,
+   resumeButton={text=tr(resume.resume and 'Continue'or 'Read chapter'),detail=label,date=date,
     enabled=true,callback=action(function()
      visit.user_paged=true
      self:openEntry(target,resume.resume)
@@ -808,9 +813,9 @@ return function(Shelf,env)
    local core=self.core
    UI():nextTick(function()
     if self.core~=core or core.retired or not core.completed_downloads[entry.id]then return end
-    self:actionNotification(string.format(tr('Downloaded %s · Open'),entry.name),function()
+    self:actionNotification(string.format(tr('Downloaded %s'),entry.name),function()
      if self.core==core and core:cached(entry.id)then core.completed_downloads[entry.id]=nil;self:openEntry(entry)end
-    end)
+    end,tr('Open'))
    end)
   end
   if kind=='conflict' and entry then self:notifyProgressConflict(entry)end

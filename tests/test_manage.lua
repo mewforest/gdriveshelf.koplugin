@@ -69,15 +69,15 @@ H.test('memory stats render on the existing menu after asynchronous storage work
   end},{__index=prototype})
  package.loaded.device={screen={getWidth=function()return 600 end}}
  package.loaded['gdriveshelf/browser']={header=function(options)
-  headers=headers+1;H.eq(#options.bars,4)
-  return {setBars=function(_,bars)H.eq(#bars,4)end,setSubTitle=function(_,value)H.eq(value,'Free space: 80')end}
+  headers=headers+1;H.eq(#options.bars,6);H.eq(options.bars[5].detail,'/Books')
+  return {setBars=function(_,bars)H.eq(bars[6].detail,'4 · index and queue: 5')end,setSubTitle=function(_,value)H.eq(value,'Free space: 80')end}
  end}
  local memory=p:showMemory()
  assert(p:showMemory()==memory)
  H.eq(menus,1);H.eq(headers,1);H.eq(updates,0)
  local data={disk={free=80,total=100},usage={auto=1,offline=2,meta=3},progress=4,index=5}
  pending[1](data)
- H.eq(updates,1);H.eq(memory.item_table[3].text,'Choose downloads to remove');H.eq(memory.item_table[6].mandatory,'2')
+ H.eq(updates,1);H.eq(memory.item_table[1].text,'Choose downloads to remove');H.eq(memory.item_table[4].mandatory,'2')
  memory.refreshMemory();pending[2](data)
  H.eq(updates,2);H.eq(menus,1);H.eq(headers,1)
 end)

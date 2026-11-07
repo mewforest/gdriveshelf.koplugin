@@ -54,7 +54,8 @@ local image=os.getenv('GDRIVESHELF_LAYOUT_IMAGE')or root..'/gdriveshelf.koplugin
 local coverHeader=B.header{width=Screen:getWidth(),title='Library',status='Offline',buttons={},summary={text='A bold series title',bold=true,height=Screen:scaleBySize(256),cover_path=image,description='A short description with enough room for a second line.',stats='5 files · 50 MB'}}
 assert(text(coverHeader,'A short description with enough room for a second line.'),'description missing from header')
 local cover=assert(find(coverHeader,function(w)return w.file==image end))
-assert(cover:getSize().h==Screen:scaleBySize(216),'cover is not enlarged to the bounded 216dp maximum')
+assert(cover:getSize().h==math.min(Screen:scaleBySize(256),math.floor((Screen:getWidth()-2*Screen:scaleBySize(12))*.52)),
+ 'cover is not enlarged within the available width and height')
 local coverMenu=Menu:new{title='Library',item_table=entries,width=Screen:getWidth(),height=Screen:getHeight(),custom_title_bar=coverHeader,items_per_page=9,is_borderless=true,is_enable_shortcut=false}
 UI:show(coverMenu);UI:forceRePaint();assert(Screen:shot(output..'/browser-cover-'..Screen:getWidth()..'x'..Screen:getHeight()..'.png'));UI:close(coverMenu)
 print('PASS browser summary, corner badges, fixed grid and bounded activity repaint')

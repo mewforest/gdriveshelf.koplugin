@@ -53,15 +53,19 @@ function B.header(o)
  end
  local bars={}
  for _,bar in ipairs(o.bars or {})do
-  local label=Text:new{text=bar.label,width=o.width-2*pad,face=Font:getFace('smallinfofont')}
+  local label=Text:new{text=bar.label,width=o.width-2*pad,face=Font:getFace('smallinfofont'),bold=bar.detail~=nil}
   local block=V:new{align='left',label}
-  local progress
+  local progress,detail
   if bar.value then
    block[#block+1]=VS:new{width=Screen:scaleBySize(4)}
    progress=require('ui/widget/progresswidget'):new{width=o.width-2*pad,height=Screen:scaleBySize(6),percentage=bar.value,radius=0,bordersize=1,margin_h=1,margin_v=1}
    block[#block+1]=progress
   end
-  bars[#bars+1]={label=label,progress=progress,block=block}
+  if bar.detail then
+   detail=Text:new{text=bar.detail,width=o.width-2*pad,face=Font:getFace('smallinfofont')}
+   block[#block+1]=detail
+  end
+  bars[#bars+1]={label=label,progress=progress,detail=detail,block=block}
   header[#header+1]=inset(block);header[#header+1]=VS:new{width=gap}
  end
  local compact_width=o.width-2*pad
@@ -71,24 +75,38 @@ function B.header(o)
   header_focus[#header_focus+1]=button
   return button
  end
- local resume
- local resumeHeight=Screen:scaleBySize(34)
- local function resumeRow(width)
-  local labelWidth=math.min(math.floor(width*.56),Screen:scaleBySize(180))
-  resume=Button:new{text='▶ '..o.resume.text,enabled=o.resume.enabled,width=labelWidth,height=resumeHeight,
-   text_font_face='cfont',text_font_size=16,avoid_text_truncation=false,padding_h=gap,padding_v=0,callback=o.resume.callback}
-  local detail=require('ui/widget/textwidget'):new{text=o.resume.detail or '',face=Font:getFace('smallinfofont'),
-   max_width=width-labelWidth-gap}
+ local resume,resumeText,resumeWidth
+ local TextLine=require('ui/widget/textwidget')
+ if o.resume then
+  resumeText='▶ '..o.resume.text
+  local label=TextLine:new{text=resumeText,face=Font:getFace('cfont',16),bold=true}
+  resumeWidth=label:getSize().w+2*gap+Screen:scaleBySize(8)
+  label:free()
+ end
+ local function resumeRow(coverColumnWidth)
+  local width=coverColumnWidth or resumeWidth
+  resume=Button:new{text=resumeText,enabled=o.resume.enabled,width=width,height=Screen:scaleBySize(36),
+   text_font_face='cfont',text_font_size=16,padding_h=gap,padding_v=0,callback=o.resume.callback}
+  local detailWidth=compact_width-width-gap
+  local detail=V:new{align='left',TextLine:new{text=o.resume.detail or '',face=Font:getFace('smallinfofont'),max_width=detailWidth}}
+  if o.resume.date then
+   detail[#detail+1]=TextLine:new{text=o.resume.date,face=Font:getFace('x_smallinfofont'),max_width=detailWidth}
+  end
   return H:new{align='center',resume,HS:new{width=gap},detail}
  end
  if o.summary then
   local row=H:new{align='top'}
-  local coverHeight=math.min(o.summary.height,Screen:scaleBySize(216))
+  -- Keep portrait artwork proportional while reserving a readable text column.
+  local coverHeight=math.min(o.summary.height,Screen:scaleBySize(288),math.floor(compact_width*.52))
   local coverWidth=math.floor(coverHeight*.72)
+  local coverColumnWidth
   local textWidth=compact_width
   if o.summary.cover_path then
-   row[#row+1]=require('ui/widget/iconwidget'):new{file=o.summary.cover_path,width=coverWidth,height=coverHeight,scale_factor=0,is_icon=false}
-   row[#row+1]=HS:new{width=gap};textWidth=textWidth-coverWidth-gap
+   coverColumnWidth=math.max(coverWidth,resumeWidth or 0)
+   row[#row+1]=require('ui/widget/container/centercontainer'):new{
+    dimen=require('ui/geometry'):new{w=coverColumnWidth,h=coverHeight},
+    require('ui/widget/iconwidget'):new{file=o.summary.cover_path,width=coverWidth,height=coverHeight,scale_factor=0,is_icon=false}}
+   row[#row+1]=HS:new{width=gap};textWidth=textWidth-coverColumnWidth-gap
   end
   local actions=H:new{align='center'}
   for _,spec in ipairs(header_actions)do actions[#actions+1]=smallButton(spec)end
@@ -98,9 +116,10 @@ function B.header(o)
   local labelRow=H:new{align='top',label}
   if #header_actions>0 then labelRow[#labelRow+1]=HS:new{width=gap};labelRow[#labelRow+1]=actions end
   local details=V:new{align='left',labelRow}
+  local smallFace=Font:getFace('smallinfofont')
   local function addLine(value,height,callback)
    if not value or value=='' or height<Screen:scaleBySize(16)then return end
-   local widget=Text:new{text=value,width=textWidth,face=Font:getFace('smallinfofont'),height=height,
+   local widget=Text:new{text=value,width=textWidth,face=smallFace,height=height,
     height_adjust=true,height_overflow_show_ellipsis=true}
    details[#details+1]=VS:new{width=math.floor(gap/2)}
    if callback then
@@ -113,21 +132,22 @@ function B.header(o)
    end
    details[#details+1]=widget
   end
-  local inline=o.resume and textWidth>=Screen:scaleBySize(245)
   addLine(o.summary.stats,Screen:scaleBySize(34))
   addLine(o.summary.cached,Screen:scaleBySize(34))
-  addLine(o.summary.description,coverHeight-details:getSize().h-gap-(inline and resumeHeight or 0),o.info)
-  if inline then details[#details+1]=VS:new{width=math.floor(gap/2)};details[#details+1]=resumeRow(textWidth)end
+  addLine(o.summary.description,2*math.floor((1+Text.line_height)*smallFace.size+.5),o.info)
   details:resetLayout()
   row[#row+1]=details
   header[#header+1]=inset(row);header[#header+1]=VS:new{width=gap}
+  if o.resume then
+   header[#header+1]=inset(resumeRow(coverColumnWidth));header[#header+1]=VS:new{width=gap}
+  end
  elseif #header_actions>0 then
   local row=H:new{align='center'}
   for _,spec in ipairs(header_actions)do row[#row+1]=smallButton(spec)end
   header[#header+1]=inset(row)
  end
- if o.resume and not resume then
-  header[#header+1]=inset(resumeRow(compact_width));header[#header+1]=VS:new{width=gap}
+ if o.resume and not o.summary then
+  header[#header+1]=inset(resumeRow());header[#header+1]=VS:new{width=gap}
  end
  header.bindMenu=function(_,menu)title.show_parent=menu end
  header.getHeight=function(h)return h:getSize().h end
@@ -139,6 +159,7 @@ function B.header(o)
    if widgets then
     widgets.label:setText(bar.label)
     if widgets.progress and bar.value then widgets.progress:setPercentage(bar.value)end
+    if widgets.detail then widgets.detail:setText(bar.detail)end
     widgets.block:resetLayout()
    end
   end

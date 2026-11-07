@@ -208,7 +208,7 @@ function M.install(Shelf,env)
   list()
   return folders
  end
- local function memoryBars(stats,settings)
+ local function memoryBars(stats,settings,books_dir)
   local disk,usage=stats.disk or {},stats.usage or {}
   local used=disk.total and (disk.used or disk.total-(disk.free or 0))
   local function bar(label,value,limit,format)
@@ -218,7 +218,9 @@ function M.install(Shelf,env)
   return {bar('Disk used',used,disk.total,env.bytes),
    bar(labels.auto,usage.auto,(settings.auto_mib or 3072)*1048576,env.binaryBytes),
    bar('Metadata cache',usage.meta,(settings.meta_mib or 256)*1048576,env.binaryBytes),
-   {label=tr('Safety reserve: 512 MiB · active files are protected')}}
+   {label=tr('Safety reserve: 512 MiB · active files are protected')},
+   {label=tr('Document folder'),detail=books_dir},
+   {label=tr('Progress and snapshots'),detail=F('%s · index and queue: %s',env.bytes(stats.progress),env.bytes(stats.index))}}
  end
  function Shelf:showMemory()
   if self.memory_menu and not self.memory_menu._closed then return self.memory_menu end
@@ -234,7 +236,7 @@ function M.install(Shelf,env)
     local function paint()
      if self.core~=core or menu._closed then return end
      stats=result or {}
-     header:setBars(memoryBars(stats,self.settings))
+     header:setBars(memoryBars(stats,self.settings,core.storage.books_dir))
      header:setSubTitle(F('Free space: %s',env.bytes(stats.disk and stats.disk.free)),true)
      self:replaceMenu(menu,menu.memoryRows())
     end
@@ -244,8 +246,6 @@ function M.install(Shelf,env)
   end
   local function rows()
    local result={
-    {text=F('Document folder: %s',core.storage.books_dir),select_enabled=false},
-    {text=F('Progress and snapshots: %s · index and queue: %s',env.bytes(stats.progress),env.bytes(stats.index)),select_enabled=false},
     {icon_file=env.root..'/resources/icons/trash.svg',text=tr('Choose downloads to remove'),callback=function()self:showManagedDownloads()end},
     {icon='appbar.settings',text=tr('Cache limits'),callback=function()self:showCacheLimits(refresh)end},
    }
@@ -256,7 +256,7 @@ function M.install(Shelf,env)
    return result
   end
   header=require('gdriveshelf/browser').header{width=require('device').screen:getWidth(),title=tr('Storage and cache'),
-   status=tr('Checking storage…'),buttons={},bars=memoryBars(stats,self.settings),close=function()close(menu)end,back=function()close(menu)end}
+   status=tr('Checking storage…'),buttons={},bars=memoryBars(stats,self.settings,core.storage.books_dir),close=function()close(menu)end,back=function()close(menu)end}
   menu=self:menu(tr('Storage and cache'),rows(),{header=header,icons=true,perpage=7,multiline=true,close=function()
    if self.memory_menu==menu then self.memory_menu=nil end
    if self.memory_measuring==menu then
