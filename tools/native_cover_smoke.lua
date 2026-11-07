@@ -23,7 +23,7 @@ for _,entry in ipairs{
  {'cover.png',png},
 }do assert(writer:addFileFromMemory(entry[1],entry[2]))end
 writer:close();assert(fs:exists(epub))
-local rows={};local sequence=0
+local rows,gallery_rows={},{};local sequence=0
 local function snapshot(dir)
  local result={}
  local function walk(path)
@@ -34,14 +34,16 @@ local function snapshot(dir)
  end
  walk(dir);return require('gdriveshelf/sdr').encode(result)
 end
-local function worker(entry,cached,destination)
+local function worker(entry,cached,destination,gallery)
  sequence=sequence+1;local result_path=output..'/worker-'..sequence..'.json'
  local pid=assert(utility.runInSubProcess(function()
   local attempts=0
   for _,key in ipairs{'open','hasSidecarFile','findCustomCoverFile','getSidecarDir','flush','updateLocation'}do
    NativeSDR[key]=function()attempts=attempts+1;error('Cover extraction accessed native SDR')end
   end
-  local result,err=Covers.build(entry,cached,destination)
+  local result,err
+  if gallery then result,err=Covers.galleryPages(entry,cached,1,1,{destination},150,210)
+  else result,err=Covers.build(entry,cached,destination)end
   assert(fs:writeJSON(result_path,{result=result,error=err,sidecar_accesses=attempts}))
  end,false))
  local deadline=socket.gettime()+20
@@ -74,6 +76,17 @@ for _,format in ipairs{'epub','pdf','cbz'}do
   local w,h=require('gdriveshelf/thumbnails').dimensions(assert(fs:read(dir..'/cover.png')))
   assert(w and w<=320 and h<=440);rows[#rows+1]={format=format,sidecar=state,width=w,height=h,result='pass'}
   print('PASS fresh '..format..' worker, '..state..' SDR untouched, cover '..w..'x'..h)
+  if format=='pdf'or format=='cbz'then
+   local dest=dir..'/gallery.png'
+   local gallery=worker({name='document.'..format,size=fs:size(path)},{path=path},dest,true)
+   assert(gallery.result,gallery.error and gallery.error.message)
+   assert(gallery.result.total>=1 and gallery.result.pages[1].path==dest,gallery.result.pages[1].error and gallery.result.pages[1].error.message)
+   local gw,gh=require('gdriveshelf/thumbnails').dimensions(assert(fs:read(dest)))
+   assert(gw and gw<=150 and gh<=210)
+   assert(snapshot(sidecar)==before and sha.sha256(assert(fs:read(path)))==source_hash,'Gallery changed document or SDR')
+   gallery_rows[#gallery_rows+1]={format=format,sidecar=state,width=gw,height=gh,result='pass'}
+   print('PASS bounded '..format..' gallery, '..state..' SDR untouched, page '..gw..'x'..gh)
+  end
  end
 end
 local active_path=output..'/pdf-valid/document.pdf'
@@ -111,6 +124,6 @@ local restored=offlineCore();assert(restored:titleInfo('folder').title=='Offline
 assert(require('gdriveshelf/sdr').encode{history=restored.state.history,pending=restored.state.sync.pending}==progress_before,'Manual metadata changed reading history or pending progress')
 local pending=assert(metadatafs:readJSON(metadatafs.root..'/metadata-outbox.json'));assert(pending.folders.folder.record.values.title=='Offline title')
 assert(snapshot(output..'/pdf-valid/document.sdr')==sidecars_before,'Editing manual metadata changed native SDR')
-assert(fs:writeJSON(output..'/results.json',{tests=rows,active_document='preserved',provider_class='unchanged',cb7='skipped',offline_metadata='restored',immutable_cover='private and survives metadata eviction',native_sidecar_accesses=0,network_requests=0}))
+assert(fs:writeJSON(output..'/results.json',{tests=rows,gallery=gallery_rows,active_document='preserved',provider_class='unchanged',cb7='skipped',offline_metadata='restored',immutable_cover='private and survives metadata eviction',native_sidecar_accesses=0,network_requests=0}))
 print('PASS inherited active document preserved, original provider class unchanged, CB7 skipped; zero SDR access and zero network')
 print('PASS real JSON and native image import, private immutable cover, durable offline edit/outbox across cache eviction and restart')

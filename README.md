@@ -41,7 +41,7 @@ The folder toolbar separates navigation, refresh, sorting, display mode and acti
 | Settings | Storage |
 | Grouped plugin settings | Storage pools and disk usage |
 
-Long-press a file or folder for downloads and other actions. The selection mode lets you keep several files offline at once. Folder cards show downloaded size at the upper left and a known document count at the upper right. Containers show a subfolder count instead. Confirmed empty folders are hidden by default; unknown folders remain visible. A rough opened-chapter bar summarizes reading activity. Unknown counts remain unknown; a matching `.sdr` indicates an opened document, not a completed chapter.
+Long-press a file or folder for downloads and other actions. The selection mode lets you keep several files offline at once. Folder cards show the downloaded count and size at the upper left, with the known total count and size at the upper right. Folder and chapter grids have independent layout presets. Containers show a subfolder count instead. Confirmed empty folders are hidden by default; unknown folders remain visible. A rough opened-chapter bar summarizes reading activity. Unknown counts remain unknown; a matching `.sdr` indicates an opened document, not a completed chapter.
 
 | Folder actions | Document information |
 | --- | --- |
@@ -55,7 +55,7 @@ Plugin history groups comics by folder and keeps ordinary books as individual en
 
 ## Downloads and offline reading
 
-A download shows its name, transferred bytes and verification stage. **Cancel** stops opening it; **In background** continues downloading without opening it later. The same feedback appears when the next chapter is still downloading at the end of a document. A compact activity row in the catalog opens **Downloads and sync**, where background jobs remain visible. Prefetch supports 0–3 following files; downloads run sequentially.
+Opening an uncached document shows a download dialog with its name, transferred bytes and verification stage. **Cancel** stops the request. **In background** moves it to the catalog activity row without opening the document later. The same feedback appears when the next chapter is still downloading at the end of a document. A compact activity row in the catalog opens **Downloads and sync**, where background jobs remain visible. Prefetch supports 0–3 following files; downloads run sequentially.
 
 Before travelling, save the folders you need and enable **Offline mode**. Cached files open without a server request. Going online resumes pending progress uploads. KOReader must remain running for background work.
 
@@ -69,15 +69,23 @@ The plugin keeps a **512 MiB free-space reserve** and protects active documents.
 
 Documents use readable paths such as **`Books/Series name/01.cbz`**. Duplicate or unsafe names receive a short identifier when needed. Offline pinning keeps the same path. Choose another document folder under **Downloads and storage**; moving files is cancellable and journalled. Original sidecars remain as recovery copies. Versions through 0.1.4 used a different archive layout: those archive paths are not migrated or reused; redownload documents as needed. Saved snapshots and pending sync are retained.
 
+## Light mode
+
+Switch on **Light mode** from KOReader's right-hand menu tab or the plugin settings. It pauses automatic index checks, previews, prefetch and detailed page-by-page progress lookups. Opening a folder uses its saved listing for up to 15 minutes. Use **Refresh** for a fresh listing and to send queued reading progress, or return to the catalog after reading to send it. The subtitle shows when the folder was last checked. Manual downloads, previews and indexing remain available.
+
 ## Covers, metadata and indexing
 
-Adjacent `cover.jpg`, Kotatsu Redo `index.json` and Mylar/Komga `series.json` can supply covers, names, authors and descriptions. Cover and descriptive-metadata downloads have separate switches. Service files and `.sdr` folders are hidden by default.
+Adjacent `cover.jpg`, `cover.png` or `cover.webp`, Kotatsu Redo `index.json` and Mylar/Komga `series.json` can supply covers, names, authors and descriptions. Cover and descriptive-metadata downloads have separate switches. Service files and `.sdr` folders are hidden by default.
 
-The comic-folder header is enabled by default and shows a cover and bold title. Tap the title for the full information. Downloaded CBZ, EPUB, PDF and supported CBR documents can generate local previews without enabling experiments. A folder without its own cover uses the first available cached-document preview in natural filename order. CB7 cover extraction is not guaranteed by the current runtime.
+The comic-folder header shows the cover, description and known document totals. Collapse it temporarily to see more chapters. **Continue reading** uses recent reading history or the latest matching native sidecar. If that chapter is complete, the button advances to the next unopened one. Long-press a chapter to change its read status. Downloaded CBZ, EPUB, PDF and supported CBR documents can generate local previews without enabling experiments. A folder without its own cover uses the first available cached-document preview in natural filename order. CB7 cover extraction is not guaranteed by the current runtime.
 
-**Edit folder information** changes the title, description or cover. Edits take effect locally, queue safely while offline, and sync to a separate versioned `gdriveshelf.json` plus immutable cover files. Original `index.json`, `series.json`, `cover.jpg` and native progress are preserved. Conflicting edits retain both versions for a choice under **Downloads and sync**. **Cover from first document (beta)** can use an already-downloaded first chapter or a strictly bounded remote CBZ read; unsupported remote archives require downloading the chapter first.
+**Edit folder information** changes the title, description or cover. Edits take effect locally, queue safely while offline, and sync to a separate versioned `gdriveshelf.json` plus immutable cover files. Original `index.json`, `series.json`, `cover.jpg` and native progress are preserved. Conflicting edits retain both versions for a choice under **Downloads and sync**. The editor previews the current cover and lets you import an image, reset to the automatic cover, hide it, or choose a page from a downloaded volume. The quick first-page action can also read a remote CBZ through bounded byte ranges.
 
-Optional **Index home folder recursively** asks for explicit consent and scans the selected home tree, excluding SDR contents. Documents are never downloaded for this catalog. After the first pass, ordinary refresh uses the [Drive change log](https://developers.google.com/workspace/drive/api/guides/manage-changes), with checks on catalog entry and wake limited to once per 30 seconds; manual Refresh checks immediately. **Reindex library** performs a cancellable repair pass. A local checkpoint resumes interrupted work. No shared cloud tree manifest is created. Covers and descriptions are separate low-priority tasks.
+| Comic folder | Cover editor | Page gallery |
+| --- | --- | --- |
+| Comic header and reading list | Metadata editor with current cover | Choosing a cover page |
+
+Optional **Index home folder recursively** asks for explicit consent and scans the selected home tree, excluding SDR contents. Documents are never downloaded for this catalog. After the first pass, ordinary refresh uses the [Drive change log](https://developers.google.com/workspace/drive/api/guides/manage-changes), with checks on catalog entry and wake limited to once per 30 seconds; manual Refresh checks immediately. **Reindex library** opens a progress screen for a repair pass. Pause it and resume from the saved checkpoint, or let it continue in the background. No shared cloud tree manifest is created. Covers and descriptions are separate low-priority tasks.
 
 ```mermaid
 flowchart LR

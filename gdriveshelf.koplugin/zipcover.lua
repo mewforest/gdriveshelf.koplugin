@@ -33,19 +33,19 @@ local function inflate(data,size)
  assert(result==1 and length==size and remaining==0,'Invalid bounded deflate')
  return ffi.string(buffer,length)
 end
-local function extract(file,fetch,options)
- options=options or {};local size=assert(tonumber(file.size));assert(size>=23,'Invalid ZIP size')
+local function archive(file,fetch,local_file,limit)
+ local size=assert(tonumber(file.size));assert(size>=23,'Invalid ZIP size')
  local ranges,transferred={},0
  local function read(first,last)
   assert(first>=0 and last>=first and last<size,'Invalid ZIP offset')
-  local count=last-first+1;assert(transferred+count<=8*MiB,'Preview transfer budget');assert(options.local_file or transferred+count<size,'Complete-file transfer budget refused')
+  local count=last-first+1;assert(transferred+count<=limit,'Preview transfer budget');assert(local_file or transferred+count<size,'Complete-file transfer budget refused')
   local nextRanges={};for _,r in ipairs(ranges)do nextRanges[#nextRanges+1]=r end;nextRanges[#nextRanges+1]={first,last}
   table.sort(nextRanges,function(a,b)return a[1]<b[1]end)
   local covered,lo,hi=0,nil,nil
   for _,r in ipairs(nextRanges)do
    if not lo then lo,hi=r[1],r[2]elseif r[1]<=hi+1 then hi=math.max(hi,r[2])else covered=covered+hi-lo+1;lo,hi=r[1],r[2]end
   end
-  covered=covered+hi-lo+1;assert(options.local_file or covered<size,'Complete remote ZIP refused')
+  covered=covered+hi-lo+1;assert(local_file or covered<size,'Complete remote ZIP refused')
   local data,why=fetch(first,last)
   if not data and type(why)=='table'and type(why.code)=='string'then error(why,0)end
   assert(data);assert(#data==count,'Incomplete ZIP range')
@@ -72,7 +72,9 @@ local function extract(file,fetch,options)
   pos=pos+46+nameLength+extraLength+commentLength;assert(pos<=#directory+1)
  end
  assert(#images>0,'No image in ZIP')
- local image=require('gdriveshelf/library').ordered(images,'natural')[1]
+ return require('gdriveshelf/library').ordered(images,'natural'),directoryOffset,read,function()return transferred end
+end
+local function imageData(image,directoryOffset,read)
  assert(require('bit').band(image.flags,1)==0 and(image.method==0 or image.method==8),'Unsupported encrypted/compressed image')
  assert(image.expanded>0 and image.expanded<=16*MiB and image.compressed>0 and image.compressed<=8*MiB,'Image byte budget')
  local header=read(image.offset,image.offset+29);assert(header:sub(1,4)=='PK\3\4','Invalid local ZIP header')
@@ -82,12 +84,40 @@ local function extract(file,fetch,options)
  local data=read(offset,offset+image.compressed-1)
  if image.method==8 then data=inflate(data,image.expanded)else assert(#data==image.expanded)end
  assert(Z.crc32(data)==image.crc,'ZIP checksum mismatch')
- return data,image,{bytes=transferred}
+ return data
+end
+local function extract(file,fetch,options)
+ local images,directoryOffset,read,transferred=archive(file,fetch,options and options.local_file,8*MiB)
+ local image=images[1]
+ return imageData(image,directoryOffset,read),image,{bytes=transferred()}
+end
+local function previewError()
+ return {code='preview',message='Archive preview unavailable: unsupported, changed, damaged or over budget'}
 end
 function Z.extract(file,fetch,options)
  local ok,data,image,stats=pcall(extract,file,fetch,options)
  if ok then return data,image,stats end
  if type(data)=='table'and type(data.code)=='string'then return nil,data end
- return nil,{code='preview',message='Archive preview unavailable: unsupported, changed, damaged or over budget'}
+ return nil,previewError()
+end
+function Z.pageWindow(total,first,count)
+ if type(first)~='number'or first<1 or first%1~=0 or type(count)~='number'or count<1 or count>6 or count%1~=0 then return nil end
+ if first>total then return nil end
+ return math.min(first+count-1,total)
+end
+-- Local only. Decode one member at a time and cap the number of members even
+-- if the caller asks for a larger batch.
+function Z.pages(file,fetch,first,count,visitor)
+ local ok,result=pcall(function()
+  local images,directoryOffset,read=archive(file,fetch,true,50*MiB)
+  local last=assert(Z.pageWindow(#images,first,count))
+  for number=first,last do
+   local decoded,data=pcall(imageData,images[number],directoryOffset,read)
+   if decoded then visitor(number,data)else visitor(number,nil,previewError())end
+  end
+  return {total=#images,first=first}
+ end)
+ if ok then return result end
+ return nil,previewError()
 end
 return Z

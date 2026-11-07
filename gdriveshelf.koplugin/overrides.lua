@@ -26,6 +26,13 @@ function O.normalize(data)
   if not coverName(data.cover)then return nil,errorValue('metadata','Folder cover must name an immutable GDriveShelf PNG')end
   result.cover=data.cover
  end
+ if data.cover_hidden~=nil and type(data.cover_hidden)~='boolean' then
+  return nil,errorValue('metadata','Folder cover visibility is invalid')
+ end
+ if data.cover_hidden then
+  if result.cover then return nil,errorValue('metadata','A hidden folder cover cannot name a custom image')end
+  result.cover_hidden=true
+ end
  return result
 end
 local function paths(core,id)
@@ -85,7 +92,7 @@ local function hash(data)return require('ffi/sha2').sha256(data)end
 local function storeCover(core,id,data)
  if not data or #data>COVER_LIMIT then return nil,errorValue('metadata','Folder cover exceeds the size limit')end
  local w,h=require('gdriveshelf/thumbnails').dimensions(data)
- if not w or w>320 or h>440 then return nil,errorValue('metadata','Folder cover must be a bounded PNG thumbnail')end
+ if data:sub(1,8)~='\137PNG\r\n\26\n'or not w or w>320 or h>440 then return nil,errorValue('metadata','Folder cover must be a bounded PNG thumbnail')end
  local name='gdriveshelf-cover-'..hash(data)..'.png'
  local dir=paths(core,id);local path=dir..'/'..name
  if core.storage:exists(path)then
@@ -96,6 +103,7 @@ local function storeCover(core,id,data)
  return {name=name,path=path}
 end
 local function importCover(core,id,path)
+ if core.prepared_cover_paths and core.prepared_cover_paths[path]then return storeCover(core,id,core.storage:read(path,COVER_LIMIT))end
  local data,err=core.storage:read(path,8*1048576)
  if not data then return nil,errorValue('metadata',err or 'Cannot read the selected cover image')end
  local dir=paths(core,id);core.storage:mkdir(dir)
@@ -225,9 +233,19 @@ function O.attach(Core)
  local titleInfo=Core.titleInfo
  function Core:titleInfo(parent)
   local info=titleInfo(self,parent);local store=load(self);local record=store and store.records[parent]
+  info.automatic_cover_path=info.cover_path
+  info.automatic_cover_source=info.cover_source
   if record then
    for _,key in ipairs{'title','description'}do if record.values[key]~=nil then info[key]=record.values[key]end end
-   if record.values.cover and record.cover_path and self.storage:exists(record.cover_path)then info.cover_path=record.cover_path end
+   if record.values.cover_hidden then
+    info.cover_path=nil
+    info.cover_source='hidden'
+    info.cover_hidden=true
+   elseif record.values.cover and record.cover_path and self.storage:exists(record.cover_path) then
+    info.cover_path=record.cover_path
+    info.custom_cover_path=record.cover_path
+    info.cover_source='custom'
+   end
    info.metadata_provenance={source='gdriveshelf.json',local_edit=store.pending[parent]~=nil,version=record.remote_entry and record.remote_entry.version}
   end
   return info
@@ -237,13 +255,18 @@ function O.attach(Core)
   if type(id)~='string'or id==''or type(values)~='table'then return reject(callback,errorValue('metadata','Select a folder and metadata values'))end
   local store,err=load(self);if not store then if callback then callback(nil,err)end;return nil,err end
   local previous_record=store.records[id];local old=previous_record or{};local previous=store.pending[id]
-  local wire={schema=1,title=values.title,description=values.description,cover=old.values and old.values.cover}
+  local wire={schema=1,title=values.title,description=values.description,cover=old.values and old.values.cover,cover_hidden=old.values and old.values.cover_hidden}
   local cover_path=old.cover_path
-  if coverpath==false then wire.cover=nil;cover_path=nil
-  elseif coverpath then
+  if coverpath==false or coverpath==true then
+   wire.cover=nil
+   wire.cover_hidden=coverpath or nil
+   cover_path=nil
+  elseif type(coverpath)=='string' then
    local cover;cover,err=importCover(self,id,coverpath)
    if not cover then if callback then callback(nil,err)end;return nil,err end
-   wire.cover=cover.name;cover_path=cover.path
+   wire.cover=cover.name;wire.cover_hidden=nil;cover_path=cover.path
+  elseif coverpath~=nil then
+   return reject(callback,errorValue('metadata','Invalid cover selection'))
   end
   wire,err=O.normalize(wire);if not wire then if callback then callback(nil,err)end;return nil,err end
   if #self.storage.json.encode(wire)>JSON_LIMIT then return reject(callback,errorValue('metadata','Folder metadata is too large'))end
@@ -292,8 +315,20 @@ function O.attach(Core)
   return queued
  end
  function Core:metadataConflict(folder)
-  local store=load(self);local pending=store and store.pending[folderId(folder)]
-  return pending and clone(pending.conflict)or nil
+  local id=folderId(folder)
+  local store=load(self);local pending=store and store.pending[id]
+  if not pending or not pending.conflict then return nil end
+  local issue=clone(pending.conflict)
+  local automatic=titleInfo(self,id).cover_path
+  local function preview(values,path)
+   if not values or values.cover_hidden then return nil end
+   if values.cover then return path and self.storage:exists(path) and path or nil end
+   return automatic
+  end
+  issue.local_cover_path=pending.record.cover_path
+  issue.local_preview_path=preview(issue.local_values,issue.local_cover_path)
+  issue.remote_preview_path=preview(issue.remote_values,issue.remote_cover_path)
+  return issue
  end
  function Core:resolveMetadataConflict(folder,choice,callback)
   local id=folderId(folder);local store,err=load(self);local pending=store and store.pending[id]
@@ -323,8 +358,9 @@ function O.attach(Core)
   if choice=='local'then self:flushMetadata()end;return true
  end
  local metadata=Core.metadata
- function Core:metadata(entries)
-  metadata(self,entries)
+ function Core:metadata(entries,explicit,...)
+  metadata(self,entries,explicit,...)
+  if self.settings.light_mode and not explicit then return end
   if not self:online()then return end
   local store=load(self);if not store then return end
   local seen={}
@@ -351,7 +387,7 @@ function O.attach(Core)
           elseif pending.conflict and pending.conflict.code=='ambiguous_metadata'then pending.conflict=nil end
          else store.records[id]={values=snapshot.values,cover_path=snapshot.cover_path,remote_entry=snapshot.entry,remote_values=clone(snapshot.values),revision=record and record.revision or 0}end
          local saved=persist(self,store);self:emit('metadata',{id=id},why)
-         if saved and pending and not pending.conflict then self:flushMetadata()end
+         if saved and pending and not pending.conflict and (not self.settings.light_mode or explicit)then self:flushMetadata()end
         end
        end,false)
       end
@@ -361,8 +397,10 @@ function O.attach(Core)
   end
  end
  local resume=Core.resume
- function Core:resume(...)
-  local result=resume(self,...);self:flushMetadata();return result
+ function Core:resume(explicit,...)
+  local result=resume(self,explicit,...)
+  if explicit or not self.settings.light_mode then self:flushMetadata() end
+  return result
  end
 end
 return O

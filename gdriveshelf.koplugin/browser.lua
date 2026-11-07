@@ -24,6 +24,14 @@ function B.header(o)
   titleInput.onShelfInfo=function()o.info();return true end
  end
  local header=V:new{align='left',titleInput}
+ local H=require('ui/widget/horizontalgroup')
+ local HS=require('ui/widget/horizontalspan')
+ local Button=require('ui/widget/button')
+ local Font=require('ui/font')
+ local Text=require('ui/widget/textboxwidget')
+ local header_actions,header_focus={},{}
+ if o.conflict then header_actions[#header_actions+1]={icon='notice-warning',callback=o.conflict}end
+ if o.collapse then header_actions[#header_actions+1]={icon='chevron.up',rotation=o.collapsed and 180 or 0,callback=o.collapse}end
  if #o.buttons>0 then header[#header+1]=inset(buttons);header[#header+1]=VS:new{width=gap}end
  local activity
  if o.activity then
@@ -40,18 +48,55 @@ function B.header(o)
   end
   header[#header+1]=inset(block);header[#header+1]=VS:new{width=gap}
  end
+ local compact_width=o.width-2*pad
+ local function smallButton(spec)
+  local button=Button:new{icon=spec.icon,icon_rotation_angle=spec.rotation or 0,icon_width=Screen:scaleBySize(15),icon_height=Screen:scaleBySize(15),
+   width=Screen:scaleBySize(32),height=Screen:scaleBySize(32),padding_h=0,padding_v=0,bordersize=0,callback=spec.callback}
+  header_focus[#header_focus+1]=button
+  return button
+ end
  if o.summary then
-  local row=require('ui/widget/horizontalgroup'):new{align='top'}
-  local coverHeight=math.min(o.summary.height,Screen:scaleBySize(128));local coverWidth=math.floor(coverHeight*.68)
-  local textWidth=o.width-2*pad
+  local row=H:new{align='top'}
+  local coverHeight=math.min(o.summary.height,Screen:scaleBySize(144))
+  local coverWidth=math.floor(coverHeight*.72)
+  local textWidth=compact_width
   if o.summary.cover_path then
    row[#row+1]=require('ui/widget/iconwidget'):new{file=o.summary.cover_path,width=coverWidth,height=coverHeight,scale_factor=0,is_icon=false}
-   row[#row+1]=require('ui/widget/horizontalspan'):new{width=gap};textWidth=textWidth-coverWidth-gap
+   row[#row+1]=HS:new{width=gap};textWidth=textWidth-coverWidth-gap
   end
-  row[#row+1]=require('ui/widget/textboxwidget'):new{text=o.summary.text,width=textWidth,face=require('ui/font'):getFace('cfont',22),bold=o.summary.bold==true,
-   height=coverHeight,height_adjust=true,height_overflow_show_ellipsis=true}
-  header[#header+1]=inset(row);header[#header+1]=VS:new{width=pad}
+  local actions=H:new{align='center'}
+  for _,spec in ipairs(header_actions)do actions[#actions+1]=smallButton(spec)end
+  local titleWidth=textWidth-(#header_actions>0 and actions:getSize().w+gap or 0)
+  local label=Text:new{text=o.summary.text,width=titleWidth,face=Font:getFace('cfont',20),bold=true,
+   height=math.floor(coverHeight*.42),height_adjust=true,height_overflow_show_ellipsis=true}
+  local labelRow=H:new{align='top',label}
+  if #header_actions>0 then labelRow[#labelRow+1]=HS:new{width=gap};labelRow[#labelRow+1]=actions end
+  local details=V:new{align='left',labelRow}
+  local function addLine(value,height)
+   if not value or value=='' or height<Screen:scaleBySize(16)then return end
+   local widget=Text:new{text=value,width=textWidth,face=Font:getFace('smallinfofont'),height=height,
+    height_adjust=true,height_overflow_show_ellipsis=true}
+   details[#details+1]=VS:new{width=math.floor(gap/2)}
+   details[#details+1]=widget
+  end
+  addLine(o.summary.stats,Screen:scaleBySize(24))
+  addLine(o.summary.description,coverHeight-details:getSize().h-gap)
+  details:resetLayout()
+  row[#row+1]=details
+  header[#header+1]=inset(row);header[#header+1]=VS:new{width=gap}
+ elseif #header_actions>0 then
+  local row=H:new{align='center'}
+  for _,spec in ipairs(header_actions)do row[#row+1]=smallButton(spec)end
+  header[#header+1]=inset(row)
  end
+ local resume
+ if o.resume then
+  resume=Button:new{text=o.resume.text,enabled=o.resume.enabled,width=compact_width,height=Screen:scaleBySize(36),
+   text_font_face='cfont',text_font_size=16,align='left',avoid_text_truncation=false,padding_h=gap,padding_v=0,
+   callback=o.resume.callback}
+  header[#header+1]=inset(resume);header[#header+1]=VS:new{width=gap}
+ end
+ header.bindMenu=function(_,menu)title.show_parent=menu end
  header.getHeight=function(h)return h:getSize().h end
  header.setTitle=function(_,text,refresh)title:setTitle(text,refresh)end
  header.setSubTitle=function(_,text,refresh)title:setSubTitle(text,refresh)end
@@ -59,7 +104,7 @@ function B.header(o)
   if not activity or text==activity.text then return end
   activity:setText(text,activity.width);activity:refresh()
  end
- header.generateVerticalLayout=function()local layout=title:generateVerticalLayout();for _,row in ipairs(buttons.layout or {})do layout[#layout+1]=row end;if activity then layout[#layout+1]={activity}end;return layout end
+ header.generateVerticalLayout=function()local layout=title:generateVerticalLayout();for _,row in ipairs(buttons.layout or {})do layout[#layout+1]=row end;if activity then layout[#layout+1]={activity}end;if #header_focus>0 then layout[#layout+1]=header_focus end;if resume then layout[#layout+1]={resume}end;return layout end
  return header
 end
 function B.gridClass(Menu)
@@ -96,7 +141,13 @@ function B.gridClass(Menu)
      local badges
      if item.card_left or item.card_right then
       local TW=require('ui/widget/textwidget')
-      local left=TW:new{text=item.card_left or '',face=detailFont};local right=TW:new{text=item.card_right or '',face=detailFont}
+      local function badge(value,icon)
+       local label=TW:new{text=value or '',face=detailFont}
+       if not icon or not value or value==''then return label end
+       local size=Screen:scaleBySize(11)
+       return H:new{align='center',require('ui/widget/iconwidget'):new{icon=icon,width=size,height=size},HS:new{width=spacer},label}
+      end
+      local left=badge(item.card_left,item.card_left_icon);local right=badge(item.card_right,item.card_right_icon)
       local remaining=contentWidth-left:getSize().w-right:getSize().w
       if remaining>=gap then
        badges=H:new{left,HS:new{width=remaining},right}
@@ -112,7 +163,7 @@ function B.gridClass(Menu)
      local textHeight=label:getSize().h+(detail and detail:getSize().h+spacer or 0)+(item.folder_progress~=nil and progressHeight+spacer or 0)
      local body=V:new{align='center'}
      if item.icon_file then
-      local pictureHeight=math.max(1,math.min(math.floor(bodyHeight*.65),bodyHeight-textHeight-spacer))
+      local pictureHeight=math.max(1,math.min(math.floor(bodyHeight*.83),bodyHeight-textHeight-spacer))
       local picture=require('ui/widget/iconwidget'):new{file=item.icon_file,width=contentWidth,height=pictureHeight,scale_factor=0,is_icon=false,alpha=true}
       body[#body+1]=Center:new{dimen=Geom:new{w=contentWidth,h=pictureHeight},picture}
       body[#body+1]=VS:new{width=spacer}

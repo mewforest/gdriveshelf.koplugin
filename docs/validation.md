@@ -10,7 +10,7 @@ Install LuaJIT and Python 3, then run from the source checkout:
 
 ```sh
 make test
-make package VERSION=0.1.7
+make package VERSION=0.1.8
 ```
 
 `make test` runs Lua suites and Python authorization tests without Google credentials. `make package` also checks syntax and builds an allowlisted release ZIP and SHA-256 checksum in `dist/`.
@@ -120,7 +120,7 @@ The [read-only live catalog result](test-results/live-catalog-progress.json) cov
 
 [Native local-cover checks](test-results/native-covers.json) used EPUB, PDF and CBZ against missing, empty, corrupt and valid sidecars. All twelve combinations produced bounded covers while leaving source/SDR bytes, timestamps and backups unchanged. The adapter made zero native sidecar API accesses and zero network requests, retained an inherited active document and left the original provider class unchanged. CB7 was skipped. `tools/native_cover_smoke.lua` reproduces these checks with independently authored fixtures.
 
-`tools/browser_layout_smoke.lua` verifies native widgets at 600×800 and 1200×1600: fixed card columns, compact coverless header, bounded 128dp cover, measured corner badges/fallback, and an activity update that repaints exactly its own rectangle. `tools/ui_preview.lua` renders Russian and English information, editor, diagnostics, recovery, activity/queue, settings and stable local preview screens. Run SDL checks with `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software` and `EMULATE_READER_W/H` to get exact dimensions independent of desktop window limits.
+`tools/browser_layout_smoke.lua` verifies native widgets at 600×800 and 1200×1600: fixed card columns, compact coverless header, bounded 144dp cover, measured corner badges/fallback, and an activity update that repaints exactly its own rectangle. `tools/ui_preview.lua` renders Russian and English information, editor, diagnostics, recovery, activity/queue, settings and stable local preview screens. Run SDL checks with `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software` and `EMULATE_READER_W/H` to get exact dimensions independent of desktop window limits.
 
 [AppStore native evidence](test-results/appstore-native.json) uses genuine upstream `appstore.koplugin` at the recorded commit. Only `socket.http.request` is replaced with synthetic GitHub API/raw/release responses. The real release picker, native archive reader, nested plugin extraction, collision checks, manual repository matching, install tracking and version comparison run unchanged. On macOS, separate native processes check startup after fresh release updates, an actual old 0.1.6 manual installation, and a nested source archive. Eleven synthetic protected files retain bytes, timestamps and permissions, including authorization, readable book paths, native SDR, queues, history and user metadata. The selected installed target reports its release version and no further update.
 
@@ -129,6 +129,16 @@ Android API 30 also passed an actual AppStore release-ZIP upgrade from the old 0
 The [Android reliability checks](test-results/android-reliability.json) add twenty passed checks on the real API 30 runtime: recursive indexing/catch-up and incremental refresh, local CBZ/EPUB/PDF covers, empty/malformed SDR preservation, offline reading with `doc`/`dir`/`hash` metadata, active-request cooldown/sleep/wake, native automatic-next joining prefetch, next from KOReader's popup, folder boundaries, conditional native SDR roundtrip, unchanged-SDR zero-download checks, and diagnostics privacy. Four further [folder-metadata checks](test-results/android-folder-metadata.json) cover durable offline edits and cover, ordered cloud uploads, a real external-client conflict and explicit conditional resolution. Two [navigation checks](test-results/android-navigation.json) verify the parent arrow on the first offline paint and its actual parent-folder tap. Cloud writes were confined to a newly created disposable child of the authorized test library; original libraries were read-only.
 
 The AppStore harness uses its documented synchronous update-check fallback; asynchronous check cancellation is not covered. Old 0.1.6 has no metadata version, so its initial fixture update check uses a later synthetic release date; checks after upgrading use the installed literal version. The source-archive case tests extraction compatibility, not the recommended update route. Use release ZIPs for stable versions. Unauthenticated public discovery/download remains untested while this repository is private; it must be checked after the owner changes visibility. See `tools/appstore_update_smoke.lua` for required disposable profiles and fixtures; it never uses a real Google account.
+
+### Light mode and cover gallery
+
+The synthetic initial index for 40 subfolders and 800 documents now makes five full index writes, down from 89 on the prior release. The suite also checks 800 subfolders, pause and resume mid-batch, failed checkpoint writes, and the 15-minute light-mode listing lifetime. These are operation counts from fixtures.
+
+Native macOS layout checks at 400×600, 600×800 and 1200×1600 cover the description and cover in the comic header, fixed grid columns, badges and bounded activity repaint. The native worker checks include PDF and CBZ page selection and WebP import. Opening those archives for gallery previews leaves the document and its native reading metadata unchanged.
+
+Android API 30 checks at 1404×1872 and 600×800 use a local comic archive and a simulated provider. Both languages render the catalog, editor and cover gallery. The tests select a page and cancel its draft, pause and resume indexing, move a download to the background, and cancel a foreground request. The settings screen stays pixel-identical while a background transfer advances. These checks exercise KOReader on Android. Physical E-Ink timing is still device-specific.
+
+The genuine AppStore installer also updated the packaged 0.1.7 build to 0.1.8 using simulated GitHub responses. The installed version stayed current after a separate-process restart. Authorization, documents, native progress, history and both outboxes retained their stored state.
 
 ### Physical readers
 

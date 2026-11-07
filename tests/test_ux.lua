@@ -1,5 +1,6 @@
 local H=require('tests/helper')
 package.loaded['ui/widget/container/widgetcontainer']={extend=function(_,t)return t end}
+package.loaded['ui/uimanager']={nextTick=function(_,callback)callback()end}
 local Plugin=dofile('gdriveshelf.koplugin/main.lua')
 local function instance()
  local p=setmetatable({settings={},core={state={folders={},entries={},folder_pins={},folder_types={},listings={},summaries={}},cached=function()return nil end,folderStats=function()return {bytes=0}end,titleInfo=function()return {title='Title',chapters={}}end}},{__index=Plugin})
@@ -11,9 +12,9 @@ H.test('main menu opens the library directly and keeps settings separate',functi
  assert(items.gdriveshelf and items.gdriveshelf.callback and not items.gdriveshelf.sub_item_table)
  assert(items.gdriveshelf_settings and items.gdriveshelf_settings.callback)
 end)
-H.test('settings have categories and a single explicit offline checkbox',function()
- local p=instance();local m=p:showSettings();assert(m and #m.item_table==7)
- assert(m.item_table[1].checked~=nil and not m.item_table[1].icon)
+H.test('settings expose independent offline and light mode checkboxes',function()
+ local p=instance();local m=p:showSettings();assert(m and #m.item_table==8)
+ assert(m.item_table[1].checked~=nil and m.item_table[2].checked~=nil)
 end)
 H.test('folder contents have no navigation or action pseudo-file',function()
  local p=instance();local rows=p:folderRows('p',{{id='a',name='1.cbz',parent_id='p'}},false)
@@ -53,4 +54,29 @@ H.test('hiding known empty children does not mislabel their parent as empty',fun
  local p=instance();p.core.state.listings.p={complete=true};p.core.folderStats=function()return{empty=true,bytes=0}end
  local rows=p:folderRows('p',{{id='e',name='Empty',is_folder=true}},false)
  assert(rows[1].text:find('display settings',1,true))
+end)
+H.test('empty imported chapter titles fall back to the original filename',function()
+ local p=instance();p.core.titleInfo=function()return{chapters={['2.cbz']='  \n '}}end
+ local row=p:folderRows('p',{{id='b',name='2.cbz',parent_id='p'}},false)[1]
+ H.eq(row.text,'2.cbz')
+end)
+H.test('a covered folder does not paint status over settings',function()
+ local p=instance();local paints=0
+ local settings={}
+ package.loaded['ui/uimanager']={getTopmostVisibleWidget=function()return settings end,nextTick=function(_,f)f()end}
+ p.folder_menu={title_bar={setSubTitle=function()paints=paints+1 end}}
+ p.core.state.downloads={}
+ p:refreshBrowser(true)
+ H.eq(paints,0);assert(p.browser_pending)
+end)
+H.test('home shortcut explicitly resets the page and keeps the home folder',function()
+ local p=instance()
+ p.settings.home='library'
+ p.getCore=function()return p.core end
+ p.hasCredentials=function()return true end
+ p.showFolder=function(_,parent,offline,force,render_only,navigation)
+  H.eq(parent,'library');H.eq(navigation,'home')
+  assert(not offline and not force and not render_only)
+ end
+ p:showLibrary(true)
 end)

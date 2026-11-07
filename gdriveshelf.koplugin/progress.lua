@@ -10,44 +10,54 @@ return function(Core)
   if not e or not(e.version or e.checksum or(e.modified_time and e.size))then return nil end
   return table.concat({tostring(e.id),tostring(e.version or''),tostring(e.checksum or''),tostring(e.modified_time or''),tostring(e.size or'')},':')
  end
- local function sameBook(a,b)return a.name==b.name and a.parent_id==b.parent_id and SDR.sameBook(a,b)end
+ local function sameBook(a,b)
+  return SDR.sameBook(a,b) and a.name==b.name and a.parent_id==b.parent_id
+ end
+ local function pendingMark(core,entry)
+  local mark=(core.state.sync.chapter_marks or {})[entry.id]
+  if mark and sameBook(mark.entry,entry) then return mark end
+ end
+ local FRESH_SECONDS=30
  local remember=Core.rememberList
- function Core:rememberList(parent,entries)
-  local result=remember(self,parent,entries)
-  self.progress_fresh=self.progress_fresh or{};self.progress_fresh[parent]={at=os.time(),entries=entries}
-  return result
+ function Core:rememberList(parent,entries,...)
+  local result,err=remember(self,parent,entries,...)
+  if result or (result==nil and err==nil) then
+   -- Only the immediately preceding folder listing is needed by its
+   -- visible/Continue progress request. Avoid retaining the whole tree here.
+   self.progress_fresh={[parent]={at=os.time(),entries=entries}}
+  end
+  return result,err
  end
  function Core:cancelProgress()
-  local job=self.progress_job;self.progress_job=nil
-  if job and self.jobs.cancel then self.jobs:cancel(job.key)end
+  local job=self.progress_job
+  if not job then return end
+  self.progress_job=nil
+  if self.jobs.cancel then self.jobs:cancel(job.key)end
   self:emit('progress_state')
  end
- function Core:lazyProgress(entries)
-  if not self.settings.sync_enabled or not self:online()then return false end
-  local selected,ids={},{}
-  for _,entry in ipairs(entries or{})do if Library.supported(entry)and not ids[entry.id]then ids[entry.id]=true;selected[#selected+1]=copy(entry)end end
-  if #selected==0 then if self.progress_job then self:cancelProgress()end;return false end
-  local key={};for _,entry in ipairs(selected)do key[#key+1]=entry.id..':'..tostring(fingerprint(entry))end;key=table.concat(key,'|')
-  if self.progress_job then if self.progress_job.selection==key then return false end;self:cancelProgress()end
-  self.state.progress_cache=self.state.progress_cache or{}
+ function Core:cancelAutomaticProgress()
+  if self.progress_job and self.progress_job.mode=='visible' then self:cancelProgress() end
+ end
+ local function readBatch(self,job,selected,done)
   local previous,fresh,scopes={},{},{};local now=os.time()
-  for parent,record in pairs(self.progress_fresh or{})do if now-record.at<30 then fresh[parent]=record.entries end end
+  for _,entry in ipairs(selected)do
+   local saved=(self.progress_fresh or {})[entry.parent_id]
+   if saved and now-saved.at<FRESH_SECONDS then fresh[entry.parent_id]=saved.entries end
+  end
   for _,entry in ipairs(selected)do
    local catalog=self.state.catalog
    scopes[entry.parent_id]=entry.drive_id or(self.state.folders[entry.parent_id]or{}).drive_id or(catalog and catalog.members[entry.id]and catalog.scope and catalog.scope.drive_id)
    local record=self.state.progress_cache[entry.id]
    if record then
-    local cached=self:remote(entry)
+    local cached=(job.mode=='resume' or not record.summary) and self:remote(entry) or nil
     previous[entry.id]={record=copy(record),remote=cached}
     if record.dirty then fresh[entry.parent_id]=nil;if record.sidecar_id then fresh[record.sidecar_id]=nil end end
    end
   end
-  local job={key='visible-progress',selection=key,done=0,total=#selected,parent_id=selected[1].parent_id};self.progress_job=job
-  self:emit('progress_state')
-  local queued=self:network(job.key,function(p)
+  return self:network(job.key,function(p)
    local parents,sidecar_ids,records,listed={},{},{},{}
    local function add(list,id)for _,old in ipairs(list)do if old==id then return end end;list[#list+1]=id end
-   local function list(ids_to_get)
+   local function list(ids_to_get,remember_parent)
     local by_scope={};for _,id in ipairs(ids_to_get)do if not fresh[id]then
      local scope=scopes[id]or'';by_scope[scope]=by_scope[scope]or{};by_scope[scope][#by_scope[scope]+1]=id
     end end
@@ -62,13 +72,14 @@ return function(Core)
      if not buckets then return nil,e end
      for _,id in ipairs(group)do
       if type(buckets[id])~='table'then return nil,{code='invalid_response',message='Incomplete progress discovery'}end
-      fresh[id]=buckets[id];listed[id]=buckets[id]
+      fresh[id]=buckets[id]
+      if remember_parent then listed[id]=buckets[id] end
      end
     end end
     return true
    end
    for _,entry in ipairs(selected)do add(parents,entry.parent_id)end
-   local good,e=list(parents);if not good then return nil,e end
+   local good,e=list(parents,true);if not good then return nil,e end
    for _,entry in ipairs(selected)do
     local item={entry=entry};records[#records+1]=item
     local stem=SDR.sidecarName(entry.name);local matches,stems,book={},0,nil
@@ -96,7 +107,9 @@ return function(Core)
      local metadata=matches[1];item.metadata=metadata;item.signature=fingerprint(metadata)
      local old=previous[item.entry.id];local payload=old and old.remote
      local reusable=old and old.record.metadata_id==metadata.id and item.signature and old.record.signature==item.signature and old.record.book_signature==fingerprint(item.entry)
-     if reusable and old.record.failed then item.error='invalid_remote_metadata';item.failed=true
+    if reusable and old.record.failed then item.error='invalid_remote_metadata';item.failed=true
+    elseif reusable and job.mode~='resume' and old.record.summary then
+     item.unchanged=true;item.summary=old.record.summary
      elseif reusable and payload and payload.lua and fingerprint(payload.stamp)==item.signature and SDR.sameBook(payload.book_stamp,item.entry)then
       local data=SDR.decode(payload.lua)
       if data then item.unchanged=true;item.summary=SDR.summary(data)end
@@ -107,8 +120,12 @@ return function(Core)
        local lua,re=p:read(metadata,2*1048576)
        if not lua then
         -- Transport failures are retried by Core; malformed/oversized data is per book.
-        if re and(re.code=='network'or re.code=='api'or re.code=='unauthorized'or re.code=='auth')then return nil,re end
-        item.error='invalid_remote_metadata';item.failed=true
+        local status=re and tonumber(re.status)
+        if re and(re.code=='network'or re.code=='unauthorized'or re.code=='auth'
+           or (re.code=='api'and status and(status==408 or status==429 or(status>=500 and status<=599))))then return nil,re end
+        if status==404 then item.missing=true
+        elseif re and re.code=='api' then item.error='progress_unavailable'
+        else item.error='invalid_remote_metadata';item.failed=true end
        else
         local data=SDR.decode(lua)
         if not data then item.error='invalid_remote_metadata';item.failed=true
@@ -123,43 +140,278 @@ return function(Core)
   end,function(result,e)
    if self.progress_job~=job then return end
    if result then
-    local eligible,blocked={},{ }
+    local eligible,blocked={},{}
     for _,item in ipairs(result.records)do
      local current=self.state.docs[item.entry.id]or item.entry
      eligible[item.entry.id]=sameBook(current,item.entry)
      if not eligible[item.entry.id]then blocked[item.entry.parent_id]=true end
     end
-    -- Parent discovery is useful even with recursive indexing disabled.
-    for parent,rows in pairs(result.listings)do if not blocked[parent]then self:rememberList(parent,rows)end end
+    -- Retain only the direct document listing. SDR children are discovery
+    -- results and do not belong in the durable catalog.
+    local saved_parents={}
+    for _,entry in ipairs(selected)do
+     local parent=entry.parent_id
+     if result.listings[parent] and not blocked[parent] and not saved_parents[parent] then
+      self:rememberList(parent,result.listings[parent])
+      saved_parents[parent]=true
+     end
+    end
+    local changed=false
     for _,item in ipairs(result.records)do
      local entry=item.entry;local current=self.state.docs[entry.id]or entry
      if eligible[entry.id]and sameBook(current,entry)then
-      local record={sidecar_id=item.sidecar and item.sidecar.id,metadata_id=item.metadata and item.metadata.id,signature=item.signature,book_signature=fingerprint(entry),failed=item.failed,checked_at=os.time()}
+      local previous=self.state.summaries[entry.id]
+      local record={sidecar_id=item.sidecar and item.sidecar.id,metadata_id=item.metadata and item.metadata.id,signature=item.signature,book_signature=fingerprint(entry),failed=item.failed,missing=item.missing,checked_at=os.time(),summary=item.summary}
       self.state.progress_cache[entry.id]=record
-      if item.lua then
-       self:storeRemote(entry,item)
-       if not self.state.sync.pending[entry.id]then
-        self.state.summaries[entry.id]=item.summary;self.remote_ready=self.remote_ready or{};self.remote_ready[entry.id]=item.lua
-       end
-       self:emit('progress',entry)
-      elseif item.unchanged then
+      if item.lua then self:storeRemote(entry,item,true) end
+      if item.summary then
        if not self.state.sync.pending[entry.id]then
         self.state.summaries[entry.id]=item.summary
-        local remote=self:remote(entry)
-        if remote and remote.lua then self.remote_ready=self.remote_ready or{};self.remote_ready[entry.id]=remote.lua end
+        local mark=pendingMark(self,entry)
+        if item.lua and mark and mark.status~=item.summary.status then
+         self.state.sync.chapter_marks[entry.id]=nil
+        end
        end
       elseif item.missing or item.failed then
-       self:evict({'sdr:'..entry.id});if self.remote_ready then self.remote_ready[entry.id]=nil end
+       self:evict({'sdr:'..entry.id},true)
+       if not self.state.sync.pending[entry.id] and not self.state.history[entry.id] then self.state.summaries[entry.id]=nil end
       end
-      if item.error then self:emit('sync_error',entry,{code=item.error,message='Visible reading summary is unavailable'})end
+      local summary=self.state.summaries[entry.id]
+      if previous~=summary and (not previous or not summary or previous.status~=summary.status or previous.percent~=summary.percent or previous.page~=summary.page)then changed=true end
+      if item.error then job.last_error={code=item.error,message='Reading summary is unavailable'} end
      end
      job.done=job.done+1
     end
     self:save()
+    if changed then self:emit('progress')end
    end
-   self.progress_job=nil;self:emit('progress_state',nil,e)
-  end,false)
-  if queued==false and self.progress_job==job then self.progress_job=nil;self:emit('progress_state')end
-  return queued
+   done(result,e)
+  end,job.mode=='resume',function()
+   if self.progress_job~=job then return nil,{code='cancelled',message='Cancelled'} end
+   return true
+  end)
+ end
+ local function currentRecord(core,entry)
+  local signature=fingerprint(entry)
+  local record=(core.state.progress_cache or {})[entry.id]
+  if signature and record and not record.dirty and record.book_signature==signature then return record end
+ end
+ local function runProgress(core,selected,mode,onDone)
+  if not core.settings.sync_enabled or not core:online() or #selected==0 then return false end
+  local selection={}
+  for _,entry in ipairs(selected)do selection[#selection+1]=entry.id..':'..tostring(fingerprint(entry)) end
+  local key=table.concat(selection,'|')
+  local active=core.progress_job
+  if active then
+   if active.mode==mode and active.selection==key then
+    if onDone then active.listeners[#active.listeners+1]=onDone end
+    return true
+   end
+   if mode=='visible' and active.mode~='visible' then return false end
+   if mode=='resume' and active.mode=='all' and active.parent_id==selected[1].parent_id then return false end
+   core:cancelProgress()
+  end
+  core.state.progress_cache=core.state.progress_cache or {}
+  local job={key='visible-progress',mode=mode,selection=key,done=0,total=#selected,parent_id=selected[1].parent_id,listeners={onDone}}
+  core.progress_job=job
+  core:emit('progress_state')
+  local function finish(err)
+   if core.progress_job~=job then return end
+   core.progress_job=nil
+   core:emit('progress_state',nil,err)
+   for _,listener in ipairs(job.listeners)do listener(err) end
+  end
+  local advance
+  advance=function()
+   if core.progress_job~=job then return false end
+   local batch={}
+   local last=mode=='all' and math.min(job.done+4,#selected) or #selected
+   for i=job.done+1,last do batch[#batch+1]=selected[i] end
+   local queued=readBatch(core,job,batch,function(result,err)
+    if not result or job.done>=#selected then finish(err or job.last_error)
+    else
+     core:emit('progress_state')
+     advance()
+    end
+   end)
+   if not queued and core.progress_job==job then
+    core.progress_job=nil
+    core:emit('progress_state')
+   end
+   return queued
+  end
+  return advance()
+ end
+ function Core:lazyProgress(entries)
+  if self.settings.light_mode then return false end
+  local selected,seen,byParent={},{},{}
+  for _,entry in ipairs(entries or {})do
+   if entry.parent_id and Library.supported(entry) and not seen[entry.id] then
+    seen[entry.id]=true
+    local record=currentRecord(self,entry)
+    if not record or os.time()-(record.checked_at or 0)>=FRESH_SECONDS then
+     local parent=entry.parent_id
+     local listing=self.state.listings[parent]
+     if listing and listing.complete and not byParent[parent] then
+      local saved=(self.progress_fresh or {})[parent]
+      byParent[parent]=Library.matchedSidecars(saved and saved.entries or self:cachedList(parent),parent)
+     end
+     if not byParent[parent] or byParent[parent][entry.id] then selected[#selected+1]=copy(entry) end
+    end
+   end
+  end
+  if #selected==0 and self.progress_job and self.progress_job.mode=='visible' then self:cancelProgress() end
+  return runProgress(self,selected,'visible')
+ end
+ function Core:loadFolderProgress(parent,entries,callback)
+  local matched=Library.matchedSidecars(entries,parent)
+  local selected={}
+  for _,entry in ipairs(entries or {})do
+   if matched[entry.id] then selected[#selected+1]=copy(entry) end
+  end
+  return runProgress(self,selected,'all',callback)
+ end
+
+ function Core:chapterMark(entry)
+  local mark=pendingMark(self,entry)
+  if mark then return mark.status=='complete' end
+ end
+ function Core:chapterSummary(entry)
+  local summary=self.state.summaries[entry.id]
+  local mark=pendingMark(self,entry)
+  local record=(self.state.progress_cache or {})[entry.id]
+  local history=self.state.history[entry.id]
+  local pending=self.state.sync.pending[entry.id]
+  if summary and not mark and not (history and sameBook(history.entry,entry)) and not (pending and sameBook(pending.entry,entry)) then
+   local signature=summary.book_signature or (record and record.book_signature)
+   if signature and signature~=fingerprint(entry) then summary=nil end
+  end
+  if mark and (not summary or summary.status~=mark.status) then
+   summary=copy(summary)
+   summary.status=mark.status
+  end
+  return summary
+ end
+ function Core:setChapterRead(entry,read)
+  local current=entry and self.state.docs[entry.id]
+  if not entry or not Library.supported(entry) or not entry.id or not entry.parent_id
+    or type(read)~='boolean' or (current and not sameBook(current,entry)) then
+   return nil,{code='book_changed',message='This chapter has changed; its progress was preserved'}
+  end
+  local state,id=self.state.sync,entry.id
+  state.chapter_marks=state.chapter_marks or {}
+  local oldPending,oldMark,oldSummary=state.pending[id],state.chapter_marks[id],self.state.summaries[id]
+  local oldConflict=state.conflicts[id]
+  local oldConflictLua=oldConflict and oldConflict.local_lua
+  local summary=copy(self:chapterSummary(entry))
+  local pending,err=self:sync():markChapter(entry,read)
+  if not pending then return nil,err end
+  summary.status=pending.chapter_status
+  summary.book_signature=fingerprint(entry)
+  self.state.summaries[id]=summary
+  state.chapter_marks[id]={entry=copy(entry),status=pending.chapter_status,date=pending.chapter_status_date}
+  local ok,why=self:save()
+  if not ok then
+   state.pending[id],state.chapter_marks[id],self.state.summaries[id]=oldPending,oldMark,oldSummary
+   if oldConflict then oldConflict.local_lua=oldConflictLua end
+   return nil,{code='disk',message=why or 'Could not save the chapter status'}
+  end
+  self:emit('progress',entry)
+  if self.settings.sync_enabled then self:flushPending() end
+  return pending
+ end
+ function Core:applyChapterMark(entry,data)
+  local mark=pendingMark(self,entry)
+  if not mark then return false end
+  SDR.setReadingStatus(data,mark.status,mark.date)
+  return true
+ end
+ function Core:chapterMarkApplied(entry)
+  local mark=pendingMark(self,entry)
+  if not mark then return true end
+  self.state.sync.chapter_marks[entry.id]=nil
+  local ok,err=self:save()
+  if not ok then self.state.sync.chapter_marks[entry.id]=mark end
+  return ok,err
+ end
+ function Core:chapterSyncCommitted(entry,pending,result)
+  if not pending.chapter_status or result.action=='conflict' or self.state.sync.pending[entry.id] then return end
+  if not result.lua or not SDR.sameBook(entry,result.book_stamp) then return end
+  local current=self.state.docs[entry.id]
+  if current and not sameBook(current,entry) then return end
+  local data=result.data or SDR.decode(result.lua)
+  if not data then return end
+  self:storeRemote(entry,result,true)
+  local summary=SDR.summary(data)
+  local displayed=self:chapterSummary(entry)
+  local history=self.state.history[entry.id]
+  if history and sameBook(history.entry,entry) and displayed and displayed.page then
+   summary.page=displayed.page
+   summary.percent=displayed.percent
+  end
+  self.state.summaries[entry.id]=summary
+  local mark=pendingMark(self,entry)
+  if mark and mark.status~=summary.status then self.state.sync.chapter_marks[entry.id]=nil end
+  if self.state.progress_cache then self.state.progress_cache[entry.id]=nil end
+ end
+ function Core:chapterCloudResolved(entry,result)
+  if result.lua then self:storeRemote(entry,result,true) end
+  self.state.summaries[entry.id]=result.data and SDR.summary(result.data) or nil
+  if self.state.progress_cache then self.state.progress_cache[entry.id]=nil end
+ end
+
+ function Core:resumeChapter(parent,entries,callback)
+  local books={}
+  for _,entry in ipairs(entries or {})do
+   if entry.parent_id==parent and Library.supported(entry) then books[#books+1]=entry end
+  end
+  books=Library.ordered(books,'natural',false,self.natural)
+  local sidecars=Library.matchedSidecars(entries,parent)
+  local opened={}
+  local recent,lastSidecar,lastLocal,recentAt
+  for i,entry in ipairs(books)do
+   local history=self.state.history[entry.id]
+   if history and not sameBook(history.entry,entry) then history=nil end
+   local summary=self:chapterSummary(entry)
+   opened[i]=history~=nil or summary~=nil or sidecars[entry.id]~=nil
+   if summary then lastLocal=i end
+   if sidecars[entry.id] then lastSidecar=i end
+   local time=history and tonumber(history.time)
+   if time and (not recentAt or time>recentAt or (time==recentAt and entry.id==self.state.last_document)) then
+    recent,recentAt=i,time
+   end
+  end
+  local index=recent or lastSidecar or lastLocal
+  if not index then return {entry=books[1],waiting=false,resume=false,completed=false} end
+  local candidate=books[index]
+  local function resolved()
+   local summary=self:chapterSummary(candidate)
+   local complete=summary and summary.status=='complete' or false
+   if complete and books[index+1] and not opened[index+1] then
+    return {entry=books[index+1],waiting=false,resume=false,completed=false}
+   end
+   return {entry=candidate,summary=summary,waiting=false,resume=true,completed=complete}
+  end
+  if sidecars[candidate.id] and self.settings.sync_enabled and self:online() then
+   local summary=self:chapterSummary(candidate)
+   local pending=self.state.sync.pending[candidate.id]
+   local record=currentRecord(self,candidate)
+   local fresh=record and os.time()-(record.checked_at or 0)<FRESH_SECONDS
+   local hasLocal=(pending and not pending.status_only) or pendingMark(self,candidate)
+     or (index==recent and summary and self:cached(candidate.id))
+   local advances=summary and summary.status=='complete' and books[index+1] and not opened[index+1]
+   local ready=fresh and (record.missing or record.failed or advances)
+   if fresh and not ready and not hasLocal then
+    local payload=self:remote(candidate)
+    ready=payload and payload.lua and fingerprint(payload.stamp)==record.signature and SDR.sameBook(payload.book_stamp,candidate)
+   end
+   if not hasLocal and not ready then
+    local queued=runProgress(self,{copy(candidate)},'resume',function(err)
+     if callback then callback(resolved(),err) end
+    end)
+    if queued then return {entry=candidate,summary=summary,waiting=true,resume=true,completed=false} end
+   end
+  end
+  return resolved()
  end
 end

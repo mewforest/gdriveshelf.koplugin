@@ -28,3 +28,16 @@ H.test('range failures preserve structured transport errors for retry',function(
  local data,why=Z.extract({size=100},function()return nil,network end)
  assert(not data);H.eq(why,network)
 end)
+H.test('local gallery extracts only the selected natural-order batch',function()
+ local files,directory={},{};local offset=0
+ for _,num in ipairs{10,2,1,8,9,3,4,5,6,7}do
+  local name=num..'.png';local data='image-'..num;local crc=Z.crc32(data)
+  local fields=u(0,2)..u(0,2)..u(0,4)..u(crc,4)..u(#data,4)..u(#data,4)..u(#name,2)..u(0,2)
+  files[#files+1]='PK\3\4'..u(20,2)..fields..name..data
+  directory[#directory+1]='PK\1\2'..u(20,2)..u(20,2)..fields..u(0,2)..u(0,2)..u(0,2)..u(0,4)..u(offset,4)..name
+  offset=offset+#files[#files]
+ end
+ local cd=table.concat(directory);local bytes=table.concat(files)..cd..'PK\5\6'..u(0,4)..u(10,2)..u(10,2)..u(#cd,4)..u(offset,4)..u(0,2)
+ local seen={};local result=assert(Z.pages({size=#bytes},function(a,b)return bytes:sub(a+1,b+1)end,7,6,function(page,data)seen[page]=data end))
+ H.eq(result.total,10);H.eq(result.first,7);H.eq(seen[7],'image-7');H.eq(seen[10],'image-10');assert(not seen[6])
+end)

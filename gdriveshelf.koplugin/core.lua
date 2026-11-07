@@ -6,6 +6,10 @@ local SDR=require('gdriveshelf/sdr')
 local Sync=require('gdriveshelf/sync')
 local Core={};Core.__index=Core
 local MiB=1048576
+local LIGHT_LIST_TTL=15*60
+local function automaticDownload(request)
+ return request.automatic==true or (request.automatic==nil and (request.pool=='auto'or request.pool=='meta'))
+end
 local function remoteEntry(entry)
  local out={};for _,key in ipairs{'id','name','parent_id','is_folder','size','created_time','modified_time','checksum','version','etag','mime_type','first_seen','drive_id','trashed'}do out[key]=entry[key]end
  return out
@@ -50,11 +54,11 @@ function Core:syncNetworkJobs()
  self.jobs:setOffline(self.settings.offline==true or self.sleeping==true)
  if self.last_network_state~=state then self.last_network_state=state;self:emit('network_state')end
 end
-function Core:resetNetwork(clear_auth)
+function Core:resetNetwork(clear_auth,explicit)
  self.retry_after=nil;self.retry_failures=0
  if clear_auth then self.auth_error=nil end
  if self.retry_tick and self.jobs.unschedule then self.jobs.unschedule(self.retry_tick)end
- self:syncNetworkJobs();self:resume()
+ self:syncNetworkJobs();self:resume(explicit)
 end
 function Core:suspend()
  self.sleeping=true;self:syncNetworkJobs()
@@ -66,6 +70,30 @@ function Core:setOffline(value)
  self.settings.offline=value==true
  if not value then self:resetNetwork()else self:syncNetworkJobs()end
  self:emit('offline')
+end
+function Core:setLightMode(value)
+ local enabled=value==true
+ if enabled==(self.settings.light_mode==true)then return end
+ self.settings.light_mode=enabled
+ if enabled then
+  local held=self.jobs.hold
+  self.jobs.hold=true
+  if self.index_job and not self.index_job.explicit then self:cancelIndex(false)end
+  self.index_enrichment=nil
+  if self.deep_job and self.deep_job.automatic then self:cancelDeepScan()end
+  if self.cancelAutomaticCovers then self:cancelAutomaticCovers()end
+  if self.cancelAutomaticProgress then self:cancelAutomaticProgress()end
+  local pause={code='cancelled',message='Paused in light mode',silent=true}
+  for id,request in pairs(self.state.downloads)do
+   if automaticDownload(request)and not next(self.waiters[id]or{})then self.jobs:cancel('download:'..id,pause)end
+  end
+  local implicit={}
+  for _,job in ipairs(self.jobs.queue or {})do if job.automatic then implicit[#implicit+1]=job.key end end
+  for _,key in ipairs(implicit)do self.jobs:cancel(key,pause)end
+  self.jobs.hold=held
+  self.jobs:pump()
+ else self:resume()end
+ self:emit('light_mode')
 end
 function Core:provider()
  local provider=self.provider_factory(self.credentials)
@@ -79,7 +107,7 @@ function Core:network(key,work,done,front,before,progress,local_task,options)
  if not local_task and not self:online()then return false end
  self.jobs.logger=self.logger;self:syncNetworkJobs()
  local attempts=0
- local job_options={timeout=options and options.timeout}
+ local job_options={timeout=options and options.timeout,automatic=options and options.automatic}
  job_options.retry=function(envelope,err)
   if self.logger and envelope and type(envelope.trace)=='table'then
    for i=1,math.min(128,#envelope.trace)do pcall(self.logger.event,self.logger,'request',envelope.trace[i])end
@@ -140,12 +168,13 @@ function Core:protected()
  if self.downloading_id then p[self.downloading_id]=true end
  return p
 end
-function Core:evict(ids)
+function Core:evict(ids,deferSave)
  for _,id in ipairs(ids)do local e=self.state.entries[id];if e then
   local ok=self.storage:remove(e.path)
   if e.preview_path then self.storage:remove(e.preview_path)end
   if ok or not self.storage:exists(e.path)then self.state.entries[id]=nil end
  end end
+ if deferSave then return true end
  return self:save()
 end
 function Core:cached(id)
@@ -154,94 +183,172 @@ function Core:cached(id)
  return nil
 end
 function Core:cachedList(parent)
- local cached=self:cached('list:'..parent)
- if cached then local d=self.storage:readJSON(cached.path);if d then local list={};for _,e in ipairs(d)do list[#list+1]=remoteEntry(e)end;return list end end
  local listing=(self.state.listings or {})[parent]
  if listing and listing.complete then
-  local entries={};for _,id in ipairs(listing.ids or {})do local e=self.state.docs[id]or self.state.folders[id];if e then entries[#entries+1]=e end end
+  local entries={};for _,id in ipairs(listing.ids or {})do local e=self.state.docs[id]or self.state.folders[id];if e and e.parent_id==parent then entries[#entries+1]=e end end
   return entries
  end
+ local cached=self:cached('list:'..parent)
+ if cached then local d=self.storage:readJSON(cached.path);if d then local list={};for _,e in ipairs(d)do list[#list+1]=remoteEntry(e)end;return list end end
  local entries={}
  for _,e in pairs(self.state.docs)do if e.parent_id==parent then entries[#entries+1]=e end end
  for _,e in pairs(self.state.folders)do if e.parent_id==parent then entries[#entries+1]=e end end
  return Library.ordered(entries,self.settings.sort,self.settings.reverse,self.natural)
 end
-function Core:rememberList(parent,entries)
- local stale={}
- local clean={};for _,e in ipairs(entries)do clean[#clean+1]=remoteEntry(e)end;entries=clean
- local ids={};for _,e in ipairs(entries)do ids[#ids+1]=e.id end
- self.state.listings[parent]={complete=true,checked_at=os.time(),ids=ids}
- for _,e in ipairs(entries)do e.parent_id=e.parent_id or parent
+-- Build the same listing for direct reads and for staged index transactions.
+-- A draft holds changed records only and resolves unchanged entries through its
+-- backing state. No files or live tables are touched while preparing a draft.
+function Core:updateListing(state,parent,entries,pulse)
+ local clean,ids,stale={},{},{}
+ local now=os.time()
+ for _,entry in ipairs(entries)do
+  local e=remoteEntry(entry)
+  e.parent_id=e.parent_id or parent
+  clean[#clean+1]=e;ids[#ids+1]=e.id
   if e.is_folder then
-   local old=self.state.folders[e.id];e.first_seen=old and old.first_seen or os.time()
+   local old=state.folders[e.id];e.first_seen=old and old.first_seen or now
    e.created_time=e.created_time or (old and old.created_time) or os.date('!%Y-%m-%dT%H:%M:%SZ',e.first_seen)
-   self.state.folders[e.id]=e
+   state.folders[e.id]=e
   else
-   local localPath=(self.state.docs[e.id]or {}).local_path
+   local localPath=(state.docs[e.id]or {}).local_path
    local durable=remoteEntry(e);durable.local_path=localPath
-   self.state.docs[e.id]=durable
+   state.docs[e.id]=durable
    local thumb=self.state.entries['thumb:'..e.id]
    if thumb and thumb.source_stamp~=Metadata.fingerprint(e)then stale[#stale+1]='thumb:'..e.id end
   end
+  if pulse then pulse()end
  end
- if #stale>0 then self:evict(stale)end
- local text=self.storage.json.encode(entries);local id='list:'..parent
+ state.listings[parent]={complete=true,checked_at=now,ids=ids}
+ return clean,stale
+end
+function Core:rememberList(parent,entries)
+ local clean,stale=self:updateListing(self.state,parent,entries)
+ self.listing_epoch=(self.listing_epoch or 0)+1
+ if #stale>0 then self:evict(stale,true)end
+ local text=self.storage.json.encode(clean);local id='list:'..parent
  local victims=self:cache():plan('meta',#text,self:protected(),id)
  if victims then
-  self:evict(victims)
+  self:evict(victims,true)
   local e={id=id,name='listing.json',parent_id=parent,pool='meta',size=#text,last_access=os.time(),ready=true}
   e.path=self.storage:filePath(e,'meta');local ok=self.storage:write(e.path,text)
   if ok then self.state.entries[id]=e end
  end
- self:save()
+ return self:save()
 end
 function Core:folder(parent,name,callback,force)
  self.state.folders[parent]=self.state.folders[parent] or {id=parent,name=name or parent,is_folder=true}
- local cached=self:cachedList(parent);if self.state.listings[parent]or #cached>0 or not self:online()then callback(cached,true)end
- if not self:online()then return end
+ self.catalog_folder=parent
+ local listing=self.state.listings[parent]
+ local cached=self:cachedList(parent);if listing or #cached>0 or not self:online()then callback(cached,true)end
+ if not self:online()then return false end
+ if self.settings.light_mode and not force and listing and listing.complete and os.time()-(listing.checked_at or 0)<LIGHT_LIST_TTL then
+  self:metadata(cached,true)
+  return false
+ end
  self.folder_waiters=self.folder_waiters or {};self.folder_waiters[parent]=self.folder_waiters[parent]or{}
+ self.folder_force=self.folder_force or {};self.folder_force[parent]=force or self.folder_force[parent]
  self.folder_waiters[parent][#self.folder_waiters[parent]+1]=callback
  self:network('list:'..parent,function(p)return p:list(parent)end,function(entries,err)
+  local explicit=self.folder_force[parent];self.folder_force[parent]=nil
   local listeners=self.folder_waiters[parent]or{};self.folder_waiters[parent]=nil
   if entries then self:rememberList(parent,entries)end
   for _,fn in ipairs(listeners)do fn(entries,false,err)end
-  if entries then self:metadata(entries);self:flushPending();if parent==self.settings.home then self:indexHome(force);if self.settings.beta_auto_scan then self:deepScan({id=parent},true)end end end
+  if not entries then return end
+  local current=self.catalog_folder==parent and self.catalog_visible~=false
+  if current or not self.settings.light_mode then self:metadata(entries,current)end
+  if explicit or not self.settings.light_mode then self:flushPending(explicit)end
+  if explicit and self.flushMetadata then self:flushMetadata()end
+  if current then
+   self:indexHome(explicit and parent==self.settings.home)
+   if parent==self.settings.home and self.settings.beta_auto_scan then self:deepScan({id=parent},true)end
+  end
  end,true)
+ return self.folder_waiters[parent]~=nil
 end
-function Core:metadata(entries)
- for _,e in ipairs(entries)do
-  local n=e.name:lower()
-  if not e.is_folder and ((n=='cover.jpg'and self.settings.load_covers~=false)or ((n=='index.json'or n=='series.json')and self.settings.load_metadata~=false))then
-   local old=self:cached(e.id)
-   if not old or old.modified_time~=e.modified_time or old.version~=e.version or(n=='cover.jpg'and not old.preview_path)then self:download(e,'meta')end
+local function metadataKind(entry)
+ if entry.is_folder then return end
+ local name=entry.name:lower()
+ if name=='index.json'then return 'index' end
+ if name=='series.json'then return 'series' end
+end
+local function currentMetadata(core,entry)
+ local old=core:cached(entry.id)
+ if old and Metadata.fingerprint(old)==Metadata.fingerprint(entry)then return old end
+end
+function Core:importedMetadata(entries)
+ local info={}
+ if self.settings.load_metadata==false then return info end
+ for _,entry in ipairs(entries)do
+  local kind=metadataKind(entry)
+  if kind then
+   local cached=self:cached(entry.id)
+   local parsed=cached and cached.parsed
+   if cached and not parsed then
+    local data=self.storage:readJSON(cached.path,8*MiB)
+    if data then parsed=Metadata.normalize(data,kind);cached.parsed=parsed end
+   end
+   for k,v in pairs(parsed or {})do
+    if v~=nil and v~=''and (k~='cover'or not info.cover or v~='cover.jpg')then info[k]=v end
+   end
   end
  end
+ return info
 end
-function Core:download(entry,pool,callback)
+function Core:coverMetadata(entries,explicit)
+ if self.settings.load_covers==false or (self.settings.light_mode and not explicit)then return end
+ local preferred=self:importedMetadata(entries).cover
+ local cover=Metadata.coverCandidates(entries,preferred)[1]
+ if cover then
+  local old=currentMetadata(self,cover)
+  if not old or not old.preview_path then self:download(cover,'meta',nil,not explicit)end
+ end
+end
+function Core:metadata(entries,explicit)
+ if self.settings.light_mode and not explicit then return end
+ if self.settings.load_metadata~=false then
+  for _,entry in ipairs(entries)do
+   if metadataKind(entry)and not currentMetadata(self,entry)then self:download(entry,'meta',nil,not explicit)end
+  end
+ end
+ self:coverMetadata(entries,explicit)
+end
+function Core:download(entry,pool,callback,automatic)
+ if self.settings.light_mode and automatic then return false end
  self:stopRelocation()
  local old=self:cached(entry.id)
- if old and(pool~='meta'or(old.modified_time==entry.modified_time and old.version==entry.version and(entry.name:lower()~='cover.jpg'or old.preview_path)))then
-  if pool=='offline' then old.pool='offline'end;self.state.downloads[entry.id]=nil;self:save()
+ local image=pool=='meta'and Metadata.isImageName(entry.name)
+ if old and(pool~='meta'or(Metadata.fingerprint(old)==Metadata.fingerprint(entry)and(not image or old.preview_path)))then
+  if pool=='offline' then old.pool='offline'end
+  self.state.downloads[entry.id]=nil;self:save()
   if callback then callback(old.path)end;return true
  end
  if callback then self.waiters[entry.id]=self.waiters[entry.id] or {};self.waiters[entry.id][#self.waiters[entry.id]+1]=callback end
  local wanted=self.state.downloads[entry.id]
- if wanted then if pool=='offline' then wanted.pool='offline'end else self.state.downloads[entry.id]={entry=entry,pool=pool}end
- self:save()
+ local changed=not wanted
+ if wanted then
+  if pool=='offline'and wanted.pool~='offline'then wanted.pool='offline';changed=true end
+  if not automatic and wanted.automatic~=false then wanted.automatic=false;changed=true end
+  if wanted.entry~=entry then wanted.entry=entry;changed=true end
+ else self.state.downloads[entry.id]={entry=entry,pool=pool,automatic=automatic==true}end
+ if changed then self:save()end
  if not wanted then self:emit('queued',entry)end
  if not self:online()then return false end
  local request=self.state.downloads[entry.id]
  entry.parent_name=(self.state.folders[entry.parent_id]or{}).name or entry.parent_name
- local path=(old and old.path) or self.storage:filePath(entry,pool)
- local incoming=path..'.incoming-'..tostring(self.jobs.nonce or 'test')
+ self.transfer_seq=(self.transfer_seq or 0)+1
+ local suffix='.incoming-'..tostring(self.jobs.nonce or 'test')..'x'..self.transfer_seq
+ local path,incoming
  local function before()
-  self.storage:remove(incoming);self.storage:remove(incoming..'.part');self.storage:remove(incoming..'.png')
   local size=tonumber(entry.size)
   local max=pool=='meta' and 8*MiB or size
   if not size or size<0 or (pool=='meta' and size>max)then return nil,errorValue('limit','File size is unknown or metadata is too large')end
+  path=path or(old and old.path)or self.storage:filePath(entry,pool)
+  incoming=path..suffix
+  self.storage:remove(incoming);self.storage:remove(incoming..'.part');self.storage:remove(incoming..'.png')
   local victims,err=self:cache():plan(request.pool,size,self:protected(),entry.id)
   if not victims then return nil,errorValue('space',err)end
-  self:evict(victims);self.downloading_id=entry.id;self:emit('download',entry)
+  if #victims>0 then self:evict(victims)end
+  self.downloading_id=entry.id;self:emit('download',entry)
   return true
  end
  return self:network('download:'..entry.id,function(p,report)
@@ -252,10 +359,11 @@ function Core:download(entry,pool,callback)
   if current.parent_id~=entry.parent_id or current.name~=entry.name or not SDR.sameBook(entry,current)then
    return nil,errorValue('changed','Source changed during download; retry from a refreshed folder')
   end
-  if pool=='meta'and (entry.name=='index.json'or entry.name=='series.json')then
-   local data=self.storage:readJSON(incoming,8*MiB);if data then downloaded.parsed=Metadata.normalize(data,entry.name=='index.json'and 'index'or 'series')end
+  local kind=pool=='meta'and metadataKind(entry)
+  if kind then
+   local data=self.storage:readJSON(incoming,8*MiB);if data then downloaded.parsed=Metadata.normalize(data,kind)end
   end
-  if pool=='meta'and entry.name:lower()=='cover.jpg'then
+  if image then
    local data=self.storage:read(incoming,8*MiB)
    local preview,err=require('gdriveshelf/thumbnails').render(data or '',incoming..'.png')
    if not preview then return nil,err end
@@ -263,7 +371,8 @@ function Core:download(entry,pool,callback)
   end
   downloaded.entry=current;return downloaded
  end,function(result,err)
-  self.downloading_id=nil
+  if self.downloading_id==entry.id then self.downloading_id=nil end
+  if self.transfer then self.transfer[entry.id]=nil end
   if result then
    local renamed,why=os.rename(incoming,path)
    if not renamed then result=nil;err=errorValue('disk',why)end
@@ -277,11 +386,20 @@ function Core:download(entry,pool,callback)
    e.parsed=result.parsed;e.pool=request.pool;e.path=path;e.ready=true;e.size=(result.size or tonumber(entry.size))+(e.preview_size or 0);e.last_access=os.time()
    self.state.entries[entry.id]=e;self.state.downloads[entry.id]=nil
    if pool~='meta'then entry.local_path=path;self.state.docs[entry.id]=entry end
-  else self.storage:remove(incoming);self.storage:remove(incoming..'.part');self.storage:remove(incoming..'.png');request.error=err and err.message end
-  self:save()
+  else
+   if incoming then self.storage:remove(incoming);self.storage:remove(incoming..'.part');self.storage:remove(incoming..'.png')end
+   if not (err and err.silent)then request.error=err and err.message end
+  end
+  if not (err and err.silent)then self:save()end
   local callbacks=self.waiters[entry.id] or {};self.waiters[entry.id]=nil
   for _,fn in ipairs(callbacks)do fn(result and path,err)end
-  self:emit(result and 'downloaded' or 'error',entry,err)
+  if not (err and err.silent)then self:emit(result and 'downloaded' or 'error',entry,err)end
+  if result and result.parsed and entry.parent_id then
+   local explicit=not automaticDownload(request)
+   if not self.settings.light_mode or (explicit and self.catalog_folder==entry.parent_id and self.catalog_visible~=false)then
+    self:coverMetadata(self:cachedList(entry.parent_id),explicit)
+   end
+  end
  end,pool~='meta' and callback~=nil,before,function(value)
   self.transfer=self.transfer or {};self.transfer[entry.id]=value;self:emit('transfer',entry)
  end)
@@ -296,23 +414,25 @@ function Core:open(entry,callback)
   callback(nil,errorValue(state,messages[state]or 'Network requests cannot start.'));return
  end
  self.opening_id=entry.id
- if self.index_job then self:cancelIndex()end
- if self.deep_job then self:cancelDeepScan()end
+ local held=self.jobs.hold
+ self.jobs.hold=true
+ if self.index_job and not self.index_job.explicit then self:cancelIndex(false)end
+ if self.deep_job and self.deep_job.automatic then self:cancelDeepScan()end
  local active=self.jobs.active
  local old_id=active and active.key:match('^download:(.+)$')
  local prefetch=old_id and self.state.downloads[old_id]
- local suspended
- if old_id~=entry.id and prefetch and prefetch.pool=='auto' and not next(self.waiters[old_id]or{})then
-  suspended=self.jobs.offline;self.jobs.offline=true;self.jobs:cancel(active.key)
+ if old_id~=entry.id and prefetch and prefetch.pool=='auto' and automaticDownload(prefetch)and not next(self.waiters[old_id]or{})then
+  self.jobs:cancel(active.key,{code='cancelled',message='Paused for a foreground download',silent=true})
  end
  self:download(entry,'auto',function(path,err)if not path then self.opening_id=nil end;callback(path,err)end)
- if suspended~=nil then self.jobs.offline=suspended;self.jobs:pump()end
+ self.jobs.hold=held
+ if self.jobs.pump then self.jobs:pump()end
 end
 function Core:prefetch(entry)
- if not self:online()or (Catalog.kind(entry,self.state)=='books'and not self.settings.prefetch_books)then return end
+ if self.settings.light_mode or not self:online()or (Catalog.kind(entry,self.state)=='books'and not self.settings.prefetch_books)then return end
  local list=self:cachedList(entry.parent_id)
  for _,next_entry in ipairs(Library.next(list,entry.id,self.settings.prefetch or 1,self.settings.sort,self.settings.reverse,self.natural))do
-  if (self.settings.prefetch_books or Catalog.kind(next_entry,self.state)=='comics')and not self:cached(next_entry.id)then self:download(next_entry,'auto')end
+  if (self.settings.prefetch_books or Catalog.kind(next_entry,self.state)=='comics')and not self:cached(next_entry.id)then self:download(next_entry,'auto',nil,true)end
  end
 end
 function Core:next(entry)
@@ -339,16 +459,17 @@ end
 function Core:titleInfo(parent)
  local entries=self:cachedList(parent);local info={title=(self.state.folders[parent]or{}).name or parent,chapters={}}
  info.progress=Library.folderProgress(entries,self.state.summaries,self.state.sync.pending)
- for _,e in ipairs(entries)do
-  if self.settings.load_metadata~=false and (e.name=='index.json' or e.name=='series.json')then
-   local c=self:cached(e.id);local data=c and not c.parsed and self.storage:readJSON(c.path)
-   if c and(c.parsed or data)then local parsed=c.parsed or Metadata.normalize(data,e.name=='index.json' and 'index' or 'series');for k,v in pairs(parsed)do if v~=nil and v~=''then info[k]=v end end end
-  elseif self.settings.load_covers~=false and e.name:lower()=='cover.jpg'then local c=self:cached(e.id);if c then info.cover_path=c.preview_path or c.path end end
+ for k,v in pairs(self:importedMetadata(entries))do info[k]=v end
+ if self.settings.load_covers~=false then
+  for _,entry in ipairs(Metadata.coverCandidates(entries,info.cover))do
+   local cached=self:cached(entry.id)
+   if cached then info.cover_path=cached.preview_path or cached.path;info.cover_source='imported';break end
+  end
  end
  if not info.cover_path and self.settings.load_covers~=false and self.settings.beta_thumbnails then
   for _,entry in ipairs(Library.ordered(entries,'natural'))do
    if entry.name:lower():match('%.cbz$')then
-    local thumb=self:thumbnail(entry);if thumb then info.cover_path=thumb.path end;break
+    local thumb=self:thumbnail(entry);if thumb then info.cover_path=thumb.path;info.cover_source='chapter' end;break
    end
   end
  end
@@ -362,8 +483,8 @@ function Core:snapshot(entry,data)
  if self.settings.sync_enabled then self:flushPending()end
  return p
 end
-function Core:flushPending()
- if not self.settings.sync_enabled or not self:online()then return end
+function Core:flushPending(explicit)
+ if not self.settings.sync_enabled or not self:online()or (self.settings.light_mode and not explicit)then return end
  for _,pending in ipairs(self:sync():pendingList())do
   local entry=pending.entry
   if not self.state.sync.conflicts[entry.id]then
@@ -374,11 +495,12 @@ function Core:flushPending()
       result={action='conflict',conflict={reason='remote_updated',local_lua=pending.lua,remote_lua=result.lua,base_lua=pending.base_lua,stamp=result.stamp,book_stamp=result.book_stamp}}
      end
      self:sync():commit(entry,pending,result)
+     if self.chapterSyncCommitted then self:chapterSyncCommitted(entry,pending,result)end
      if result.action=='conflict'then self:emit('conflict',entry)end
      self:save()
-     if result.action~='conflict' and self.state.sync.pending[entry.id]then self:flushPending()end
-    else self:emit('sync_error',entry,err)end
-   end)
+     if result.action~='conflict' and self.state.sync.pending[entry.id]then self:flushPending(explicit)end
+    elseif not(err and err.silent)then self:emit('sync_error',entry,err)end
+   end,false,nil,nil,false,{automatic=not explicit})
   end
  end
 end
@@ -406,12 +528,12 @@ function Core:lazyProgress(entries)
   end)end
  end end
 end
-function Core:storeRemote(entry,result)
+function Core:storeRemote(entry,result,deferSave)
  local payload={lua=result.lua,stamp=result.stamp,book_stamp=result.book_stamp}
  local text=self.storage.json.encode(payload);local key='sdr:'..entry.id
  local victims=self:cache():plan('meta',#text,self:protected(),key)
  if not victims then return end
- self:evict(victims)
+ self:evict(victims,deferSave)
  local e={id=key,name='remote-sdr.json',pool='meta',size=#text,parent_id=entry.parent_id,last_access=os.time(),ready=true}
  e.path=self.storage:filePath(e,'meta')
  if self.storage:write(e.path,text)then self.state.entries[key]=e end
@@ -419,11 +541,13 @@ end
 function Core:remote(entry)
  local c=self:cached('sdr:'..entry.id);return c and self.storage:readJSON(c.path)
 end
-function Core:resume()
+function Core:resume(explicit)
  self:syncNetworkJobs()
  if self.relocating then return end
- for _,d in pairs(self.state.downloads)do self:download(d.entry,d.pool)end
- self:flushPending()
+ for _,d in pairs(self.state.downloads)do
+  self:download(d.entry,d.pool,nil,not explicit and automaticDownload(d))
+ end
+ self:flushPending(explicit)
 end
 function Core:cancelIndex()
  local job=self.index_job;self.index_job=nil
@@ -453,7 +577,7 @@ function Core:indexHome(force)
  end
  advance()
 end
-function Core:folderStats(parent)return Catalog.stats(self,parent)end
+function Core:folderStats(parent,downloads)return Catalog.stats(self,parent,downloads)end
 function Core:recordOpen(entry)
  Catalog.recordOpen(self.state,entry,os.time());return self:save()
 end

@@ -56,6 +56,30 @@ end
 function M.offlineGroups(entries)
  local r={};for _,e in pairs(entries) do if e.ready and (e.pool=='auto' or e.pool=='offline') then local p=e.parent_id;r[p]=r[p] or {};r[p][#r[p]+1]=e end end;return r
 end
+-- A sidecar belongs to one exact native filename stem in the same folder.
+function M.matchedSidecars(entries,parent)
+ local stems,folders,occupied={},{},{}
+ for _,entry in ipairs(entries or {})do
+  if entry.parent_id==parent then
+   local name=entry.name or ''
+   if entry.is_folder then
+    if name:match('%.sdr$') then folders[name]=entry end
+   else
+    local stem=SDR.sidecarName(name)
+    stems[stem]=(stems[stem] or 0)+1
+   end
+   occupied[name]=(occupied[name] or 0)+1
+  end
+ end
+ local matched={}
+ for _,entry in ipairs(entries or {})do
+  if entry.parent_id==parent and M.supported(entry) then
+   local stem=SDR.sidecarName(entry.name)
+   if stems[stem]==1 and occupied[stem]==1 then matched[entry.id]=folders[stem] end
+  end
+ end
+ return matched
+end
 -- A matching native sidecar only says a book was opened, not how far it was read.
 function M.folderProgress(entries,summaries,pending)
  local books,stems,sidecars={},{},{}

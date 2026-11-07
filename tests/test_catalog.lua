@@ -38,3 +38,10 @@ H.test('opening a stale cached listing cannot replace a relocated local identity
  C.recordOpen(state,{id='a',name='book.cbz',parent_id='p',local_path='/old/Books/book.cbz'},10)
  H.eq(state.docs.a.local_path,'/new/Books/book.cbz')
 end)
+H.test('original Drive name sorting respects grouping but ignores the displayed title',function()
+ local entries={{id='z',name='A display title',drive_name='Series 10'},
+  {id='b',name='Z display title',drive_name='Series 2'},
+  {id='p',name='Pinned title',drive_name='Series 100',pinned=true}}
+ local ordered=C.order(entries,'drive_name',false,false)
+ H.eq(ordered[1].id,'p');H.eq(ordered[2].id,'b');H.eq(ordered[3].id,'z')
+end)

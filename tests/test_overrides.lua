@@ -81,6 +81,28 @@ H.test('importing manual metadata ignores automatic import preference and preser
  local e={id='json',name='gdriveshelf.json',parent_id='folder',version='1',etag='one'};p.files={e};p.contents.json=codec.encode{schema=1,title='Manual remote title',tree={leak=true},progress=100}
  c:metadata({e});drain();H.eq(c:titleInfo('folder').title,'Manual remote title');H.eq(c:titleInfo('folder').author,'Original author');assert(not c:titleInfo('folder').tree)
 end)
+H.test('light mode reads and sends folder overrides on explicit action only',function()
+ local c,p,drain=fixture()
+ c.settings.light_mode=true
+ assert(c:saveFolderMetadata('draft',{title='Unsent'}))
+ local entry={id='json',name='gdriveshelf.json',parent_id='folder',version='1',etag='one'};p.files={entry}
+ p.contents.json=codec.encode{schema=1,title='Cloud folder'}
+ c.settings.offline=false
+ c:metadata({entry});c:resume();H.eq(#c.queue,0)
+ c:metadata({entry},true);drain();H.eq(c:titleInfo('folder').title,'Cloud folder')
+ p.files={};c:resume(true);drain();H.eq(#p.uploads,1)
+end)
+H.test('saving a prepared draft does not decode the image again on the UI thread',function()
+ local c=fixture();local T=require('gdriveshelf/thumbnails');local render=T.render;local sha=package.loaded['ffi/sha2']
+ local png='\137PNG\r\n\26\n\0\0\0\13IHDR\0\0\1\64\0\0\1\184'
+ c.storage:write('/prepared.png',png);c.prepared_cover_paths={['/prepared.png']=true}
+ package.loaded['ffi/sha2']={sha256=function()return string.rep('b',64)end}
+ T.render=function()error('Already prepared PNG was decoded again')end
+ assert(c:saveFolderMetadata('folder',{title='Title'},'/prepared.png'))
+ local cover=c:titleInfo('folder').custom_cover_path
+ assert(cover~='/prepared.png');H.eq(c.storage:read(cover),png)
+ T.render=render;package.loaded['ffi/sha2']=sha
+end)
 H.test('an in-flight older save cannot acknowledge a newer offline edit',function()
  local c,p,drain=fixture();c.settings.offline=false;c:saveFolderMetadata({id='folder'},{title='First'})
  c.settings.offline=true;c:saveFolderMetadata({id='folder'},{title='Second'});drain();H.eq(c:titleInfo('folder').title,'Second')
@@ -214,4 +236,28 @@ H.test('a freshly moved or renamed pointer cannot authorize edits to another rem
   assert(not c:metadataConflict('folder'),'Moved or renamed file was offered as an overwrite target')
   assert(c.folder_metadata.pending.folder.last_error);H.eq(#p.uploads,0);H.eq(codec.decode(p.contents.json).title,'Remote')
  end
+end)
+H.test('hide and reset are distinct across reload and cloud round trip',function()
+ local c,p,drain,K=fixture()
+ assert(c:saveFolderMetadata('folder',{title='Mine'},true))
+ local i=c:titleInfo('folder');assert(i.cover_hidden);H.eq(i.cover_path,nil);H.eq(i.automatic_cover_path,'original-cover')
+ local fresh=setmetatable({storage=c.storage,state={},settings={offline=false},queue=c.queue,keys=c.keys},K)
+ H.eq(fresh:titleInfo('folder').cover_source,'hidden');fresh:flushMetadata();drain()
+ local remote=codec.decode(p.contents[p.files[1].id]);assert(remote.cover_hidden and not remote.cover)
+ assert(fresh:saveFolderMetadata('folder',{title='Keep hide'},nil));drain()
+ H.eq(fresh:titleInfo('folder').cover_path,nil)
+ assert(fresh:saveFolderMetadata('folder',{title='Reset'},false));drain()
+ i=fresh:titleInfo('folder');assert(not i.cover_hidden);H.eq(i.cover_path,'original-cover')
+ remote=codec.decode(p.contents[p.files[1].id]);assert(not remote.cover_hidden and not remote.cover)
+end)
+H.test('cover-only conflict exposes separate effective previews without changing the remote pointer',function()
+ local c,p,drain=fixture()
+ p.files={{id='json',name='gdriveshelf.json',parent_id='folder',version='1',etag='one'}}
+ p.contents.json=codec.encode{schema=1,title='Same title'}
+ assert(c:saveFolderMetadata('folder',{title='Same title'},true))
+ c.settings.offline=false;c:flushMetadata();drain()
+ local issue=assert(c:metadataConflict('folder'))
+ H.eq(issue.local_values.title,issue.remote_values.title);assert(issue.local_values.cover_hidden)
+ H.eq(issue.local_preview_path,nil);H.eq(issue.remote_preview_path,'original-cover');H.eq(issue.remote_cover_path,nil)
+ assert(c:resolveMetadataConflict('folder','remote'));H.eq(c:titleInfo('folder').cover_path,'original-cover');H.eq(#p.uploads,0)
 end)

@@ -17,13 +17,15 @@ package.loaded['gdriveshelf/runtime']=shared
 local Shelf=WidgetContainer:extend{name='gdriveshelf',title='GDriveShelf',is_doc_only=false}
 local MiB=1048576
 local function ui()return require('ui/uimanager')end
-local function bytes(n)
+local function formatBytes(n,base,units)
  if not n then return tr("unknown")end
- local units={'B','KiB','MiB','GiB','TiB'};local i=1
- while n>=1024 and i<#units do n=n/1024;i=i+1 end
+ local i=1
+ while n>=base and i<#units do n=n/base;i=i+1 end
  local value=string.format('%.1f',n):gsub('%.0$','')
  return value..' '..tr(units[i])
 end
+local function bytes(n)return formatBytes(n,1000,{'B','kB','MB','GB','TB'})end
+local function binaryBytes(n)return formatBytes(n,1024,{'B','KiB','MiB','GiB','TiB'})end
 local function message(text)ui():show(require('ui/widget/infomessage'):new{text=tostring(text),timeout=5})end
 local function problem(e)message(tr(type(e)=='table' and (e.message or e.code) or e or "Could not complete the action"))end
 local function stamp(e)return {id=e.id,version=e.version,checksum=e.checksum,modified_time=e.modified_time}end
@@ -150,33 +152,52 @@ function Shelf:menu(title,rows,options)
    if m.page_return_arrow then m.page_return_arrow:showHide(options.parent_enabled);m.page_return_arrow:enableDisable(options.parent_enabled)end
   end}
  end
+ local top=ui().getTopmostVisibleWidget and ui():getTopmostVisibleWidget()
+ local nested=not options.header and (options.back or (top and top._shelf_menu))
+ local function closed()
+  if menu._closed then return end
+  menu._closed=true
+  if self.folder_menu==menu then
+   self.folder_menu=nil
+   if not self.replacing_folder and self.core and self.core.cancelProgress then self.core:cancelProgress()end
+  end
+  if options.close then options.close()end
+ end
  menu=MenuClass:new{title=title,item_table=rows,width=Device.screen:getWidth(),height=Device.screen:getHeight(),
   custom_title_bar=options.header,grid_columns=options.columns,is_enable_shortcut=options.icons==true and not options.grid,is_borderless=true,is_popout=false,items_per_page=options.perpage,multilines_forced=options.multiline,
-  close_callback=function()
-   menu._closed=true
-   if self.folder_menu==menu then self.folder_menu=nil;if self.core and self.core.cancelProgress then self.core:cancelProgress()end end
-   if options.close then options.close()end
-  end}
+  title_bar_left_icon=nested and 'chevron.left' or nil,close_callback=closed}
+ if options.header and options.header.bindMenu then options.header:bindMenu(menu)end
+ menu._shelf_menu=true
+ local onCloseWidget=menu.onCloseWidget
+ menu.onCloseWidget=function(m,...)
+  if onCloseWidget then onCloseWidget(m,...)end
+  closed()
+ end
+ if nested then menu.onLeftButtonTap=function(m)m:onCloseAllMenus();return true end end
  menu.onMenuSelect=function(_,item)if item.callback and item.select_enabled~=false then self:runAction(item.callback)end;return true end
  menu.onMenuHold=function(_,item)if item.hold_callback then self:runAction(item.hold_callback)end;return true end
  menu._shelf_lazy=options.lazy
  if options.lazy then
   local original=menu.onGotoPage
-  menu.onGotoPage=function(m,page)local result=original(m,page);self:visibleProgress(m);return result end
+  menu.onGotoPage=function(m,page)
+   if not self.automatic_page and page~=m.page and self.folder_visit then self.folder_visit.user_paged=true end
+   local result=original(m,page)
+   if not self.automatic_page then self:visibleProgress(m)end
+   return result
+  end
  end
  ui():show(menu)
- if options.lazy then self:visibleProgress(menu)end
+ if options.lazy and not options.defer_lazy then self:visibleProgress(menu)end
  return menu
 end
 function Shelf:replaceMenu(menu,rows,title)
  if not menu or menu._closed then return end
- local page=menu.page or 1
- menu:switchItemTable(title or menu.title,rows)
- menu.page=math.max(1,math.min(page,menu.page_num or 1));menu:updateItems(1,true)
- if menu._shelf_lazy then self:visibleProgress(menu)end
+ menu:switchItemTable(title or menu.title,rows,-1)
 end
 function Shelf:visibleProgress(menu)
  if menu._closed then return end
+ local job=self.core.progress_job
+ if job and (job.mode=='resume' or job.mode=='all')then return end
  local entries={};local first=((menu.page or 1)-1)*(menu.perpage or 14)+1
  local signature={tostring(menu.page),tostring(self.folder_generation or 0)}
  for i=first,math.min(#menu.item_table,first+(menu.perpage or 14)-1)do
@@ -188,18 +209,18 @@ function Shelf:visibleProgress(menu)
  menu._lazy_signature=signature
  if #entries>0 then
   if self.core.ensureLocalCovers then self.core:ensureLocalCovers(entries)end
-  self.core:lazyProgress(entries)
- elseif self.core.cancelProgress then self.core:cancelProgress()end
+  if not (self.settings and self.settings.light_mode) then self.core:lazyProgress(entries)end
+ elseif self.core.cancelProgress and (not self.core.progress_job or not self.core.progress_job.mode or self.core.progress_job.mode=='visible')then self.core:cancelProgress()end
 end
 function Shelf:hasCredentials()
  local c=self.core and self.core.credentials or {}
  for _,key in ipairs{'client_id','refresh_token','access_token'}do if type(c[key])~='string'or c[key]==''then return false end end
  return true
 end
-function Shelf:showLibrary()
+function Shelf:showLibrary(first_page)
  self:getCore()
  if not self:hasCredentials()then return self:showConnectionSetup()end
- self:showFolder(self.settings.home or 'root')
+ return self:showFolder(self.settings.home or 'root',nil,nil,nil,first_page==true and 'home' or nil)
 end
 Shelf.onShowGDriveShelf=Shelf.showLibrary
 function Shelf:showConnectionSetup()
@@ -256,16 +277,18 @@ function Shelf:showOffline()
 end
 function Shelf:showFileSort()
  local labels={natural=tr("Natural name order"),name=tr("Name"),size=tr("Size"),date=tr("Modified date")}
+ local menu
  local function refresh()
   self:saveSettings()
-  if self.folder_menu and not self.folder_menu._closed then self:replaceMenu(self.folder_menu,self:folderRows(self.folder_id,self.folder_entries or {},self.folder_offline))end
+  if menu and not menu._closed then menu:onCloseAllMenus()end
+  self:requestBrowserRefresh(false)
  end
  local rows={}
  for _,mode in ipairs{'natural','name','size','date'}do
-  local m=mode;rows[#rows+1]={text=((self.settings.sort or 'natural')==m and '✓ 'or '')..labels[m],callback=function()self.settings.sort=m;refresh();self:showFileSort()end}
+  local m=mode;rows[#rows+1]={text=((self.settings.sort or 'natural')==m and '✓ 'or '')..labels[m],callback=function()self.settings.sort=m;refresh()end}
  end
- rows[#rows+1]={text=(self.settings.reverse and '✓ 'or '○ ')..tr("Reverse order"),callback=function()self.settings.reverse=not self.settings.reverse;refresh();self:showFileSort()end}
- self:menu(tr("File sorting"),rows)
+ rows[#rows+1]={text=(self.settings.reverse and '✓ 'or '○ ')..tr("Reverse order"),callback=function()self.settings.reverse=not self.settings.reverse;refresh()end}
+ menu=self:menu(tr("File sorting"),rows)
 end
 function Shelf:removeTree(parent)
  local ids,total={},0
@@ -310,33 +333,66 @@ function Shelf:openLastDocument()
  local entry=self:lastDocument()
  if entry then self:openEntry(entry,true)else message(tr("No previously opened document"))end
 end
-function Shelf:openEntry(entry,resume)
- self.core:open(entry,function(path,e)
+function Shelf:writeChapterMark(entry,path)
+ if not self.core.chapterMark or self.core:chapterMark(entry)==nil then return true end
+ local settings=require('docsettings'):open(path)
+ if not self.core:applyChapterMark(entry,settings.data)then return true end
+ local ok,result=pcall(settings.flush,settings,settings.data)
+ if not ok or not result then return nil,tr("Could not save KOReader metadata")end
+ return self.core:chapterMarkApplied(entry)
+end
+function Shelf:openDownloadedEntry(entry,resume,path,e)
   self._end_dialog=nil
   if not path then problem(e);return end
   local DocSettings=require('docsettings')
-  if not DocSettings:hasSidecarFile(path) and not self.core.state.sync.pending[entry.id]then
+  local pending=self.core.state.sync.pending[entry.id]
+  if not DocSettings:hasSidecarFile(path) and (not pending or pending.status_only)then
    local remote=self.core:remote(entry)
-   if remote then self:applyRemote(entry,remote,path)end
+   if remote then self:applyRemote(entry,remote,path,pending and pending.status_only)end
   end
+  local marked,err=self:writeChapterMark(entry,path)
+  if not marked then problem(err)end
   if self.folder_menu then self.folder_menu:onCloseAllMenus()end
   self.core.active_id=entry.id;self.core.opening_id=nil
   self.core:recordOpen(entry)
   if self.ui.document then self.ui:switchDocument(path)else require('apps/reader/readerui'):showReader(path)end
   if resume then self.core:prefetch(entry)end
- end)
+end
+function Shelf:openEntry(entry,resume)
+ self.core:open(entry,function(path,err)self:openDownloadedEntry(entry,resume,path,err)end)
 end
 function Shelf:fileActions(entry)
  local cached=self.core:cached(entry.id)
- self:menu(entry.name,{
-  {text=tr("Open"),callback=function()self:openEntry(entry)end},
-  {text=tr("Download and keep offline"),callback=function()self.core:download(entry,'offline');message(tr("File added to the download queue"))end},
-  {text=tr("Remove local download"),callback=function()
+ local supported=Library.supported(entry)
+ local summary=supported and self.core.chapterSummary and self.core:chapterSummary(entry)
+ local read=summary and summary.status=='complete'
+ local menu
+ local function close()if menu and not menu._closed then menu:onCloseAllMenus()end end
+ local rows={
+  {icon='appbar.pageview',text=tr("Open"),select_enabled=supported,callback=function()close();self:openEntry(entry)end},
+  {icon='move.down',text=tr("Download and keep offline"),select_enabled=supported,callback=function()
+   close();self.core:download(entry,'offline');message(tr("File added to the download queue"))
+  end},
+  {icon='close',text=tr("Remove local download"),select_enabled=cached~=nil,callback=function()
+   close()
    ui():show(self:confirmation{text=tr("Remove the local file? Reading progress will be kept."),ok_text=tr("Remove"),ok_callback=function()local ok,e=self.core:removeFile(entry.id);if not ok then problem(e)end end})
   end},
-  {text=tr("Recover reading progress"),callback=function()self:showRecovery(entry)end},
-  {text=tr("Information"),callback=function()self:showInfo(entry.parent_id)end},
- })
+  {icon='bookmark',text=tr(read and "Mark as unread" or "Mark as read"),select_enabled=supported,callback=function()
+   local active=self:activeEntry()
+   if active and active.id==entry.id then message(tr("Close the book first"));return end
+   local ok,err=self.core:setChapterRead(entry,not read)
+   if not ok then problem(err);return end
+   if cached and sameBook(cached,entry) and require('docsettings'):hasSidecarFile(cached.path)then
+    ok,err=self:writeChapterMark(entry,cached.path)
+    if not ok then problem(err)end
+   end
+   close()
+   if self.folder_visit then self.folder_visit.resume_started=nil;self:startFolderResume()end
+  end},
+  {icon='bookmark',text=tr("Recover reading progress"),select_enabled=supported,callback=function()close();self:showRecovery(entry)end},
+  {icon='info',text=tr("Information"),callback=function()close();self:showInfo(entry.parent_id)end},
+ }
+ menu=self:menu(entry.name,rows,{icons=true,multiline=true});return menu
 end
 function Shelf:showInfo(parent)
  local info=self.core:titleInfo(parent);local text={info.title or parent}
@@ -410,7 +466,10 @@ function Shelf:showConflict(entry)
     local ok,e=self:applyRemote(entry,{lua=saved.remote_lua,stamp=saved.stamp,book_stamp=saved.book_stamp},cached.path,true)
     if not ok then problem(e);return end
     local result;result,e=self.core:sync():resolve(entry.id,'remote');if not result then problem(e);return end
-    self.core:save();message(tr("Cloud version applied. Reopen the book."))
+    self.core:chapterCloudResolved(entry,result)
+    local savedOk,saveError=self.core:save()
+    if not savedOk then problem(saveError);return end
+    self.core:emit('progress',entry);message(tr("Cloud version applied. Reopen the book."))
    end})
   end},
  })
@@ -497,6 +556,7 @@ function Shelf:onCloseDocument()
  -- ReaderUI may defer its native SaveSettings until after CloseDocument.
  -- Flush native module state first so the final snapshot includes this page.
  if self.ui.saveSettings then self.ui:saveSettings()end
+ if self.settings.light_mode and self:activeEntry() then self.core.reading_sync_due=true end
  self:snapshotCurrent();if self.ui.document then self.core:finishRelocationForPath(self.ui.document.file)end;self.core.active_id=nil;self.core.opening_id=nil;self._end_dialog=nil
 end
 function Shelf:onPageUpdate(page)
@@ -549,6 +609,6 @@ end
 function Shelf:onNetworkConnected()if self.core and not self.settings.offline then self.core:resetNetwork()end end
 function Shelf:onSuspend()if self.core then self.core:suspend()end end
 function Shelf:onResume()if self.core then self.core:wake()end end
-require('gdriveshelf/ux')(Shelf,{shared=shared,root=pluginRoot,bytes=bytes,message=message,problem=problem})
+require('gdriveshelf/ux')(Shelf,{shared=shared,root=pluginRoot,bytes=bytes,binaryBytes=binaryBytes,message=message,problem=problem})
 require('gdriveshelf/controls')(Shelf,{shared=shared,root=pluginRoot,bytes=bytes,message=message,problem=problem})
 return Shelf

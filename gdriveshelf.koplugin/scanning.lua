@@ -8,11 +8,11 @@ return function(Core)
   self:emit('scanned')
  end
  function Core:deepScan(folder,automatic)
-  if not self.settings.beta_thumbnails or not self:online()or (automatic and(not self.settings.beta_auto_scan or folder.id=='root'))then return false end
+  if not self.settings.beta_thumbnails or not self:online()or (automatic and(self.settings.light_mode or not self.settings.beta_auto_scan or folder.id=='root'))then return false end
   if self.deep_job then return false end
   self.state.preview_attempts=self.state.preview_attempts or {};self.state.deep_checked=self.state.deep_checked or {}
   if automatic and not Catalog.due(self.state.deep_checked[folder.id],os.time(),self.settings)then return false end
-  local job={root=folder.id,dirs={folder},files={},seen={},done=0,skipped=0,total=0};self.deep_job=job
+  local job={root=folder.id,automatic=automatic,dirs={folder},files={},seen={},done=0,skipped=0,total=0};self.deep_job=job
   local function advance()
    if self.deep_job~=job then return end
    if not self:online()or not self.settings.beta_thumbnails then self:cancelDeepScan();return end
@@ -59,7 +59,7 @@ return function(Core)
    self:network(job.key,function(provider)return provider:list(dir.id)end,function(entries,err)
     if self.deep_job~=job then return end
     if entries then
-     self:rememberList(dir.id,entries);self:metadata(entries)
+     self:rememberList(dir.id,entries);self:metadata(entries,not automatic)
      for _,e in ipairs(entries)do
       if e.is_folder and not Metadata.isService(e)then job.dirs[#job.dirs+1]=e
       elseif not e.is_folder and e.name:lower():match('%.cbz$')then job.files[#job.files+1]=e;job.total=job.total+1 end

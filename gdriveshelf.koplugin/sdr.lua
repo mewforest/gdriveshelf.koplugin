@@ -191,6 +191,12 @@ function M.summary(data)
     if not finite(percent) then percent=nil else percent=math.max(0,math.min(1,percent)) end
     return {percent=percent,page=page,status=type(data.summary)=='table' and data.summary.status or nil}
 end
+function M.setReadingStatus(data,status,date)
+    if type(data.summary)~='table' then data.summary={} end
+    data.summary.status=status
+    data.summary.modified=date
+    return data
+end
 local function equal(a,b)
     if type(a)~=type(b) then return false end
     if type(a)~='table' then return a==b end

@@ -122,7 +122,7 @@ test('storage screen localizes all three cleanup rows inside its pool loop',func
  local p=instance({storage=storage,cache=function()return {usage=function()return {auto=1,offline=2,meta=3}end}end});local rows
  p.menu=function(_,_,r)rows=r end;p:showMemory()
  assert(#rows==7 and rows[4].text:find('Temporary reading cache',1,true) and rows[6].callback)
- assert(rows[1].text=='Free disk space: 12.4 GiB')
+ assert(rows[1].text=='Free disk space: 13.3 GB')
 end)
 test('resume last document uses the normal opener with prefetch and persists title sort',function()
  local entry={id='last',name='Book.cbz',parent_id='series'}

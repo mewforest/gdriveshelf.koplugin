@@ -1,5 +1,6 @@
 -- Local catalog decisions; no network or document decoding happens here.
 local Library=require('gdriveshelf/library')
+local Metadata=require('gdriveshelf/metadata')
 local C={}
 function C.kind(entry,state)
  local override=(state.folder_types or {})[entry.parent_id]
@@ -31,32 +32,64 @@ function C.due(listing,now,settings)
  local hours=settings.index_hours;if hours==nil then hours=24 end
  return hours>0 and now-(listing.checked_at or 0)>=hours*3600
 end
-function C.stats(core,parent)
- local state=core.state;local count,folders,empty,visible_count
+function C.downloadStats(core)
+ local state=core.state
+ local totals={}
+ for _,entry in pairs(state.entries)do
+  if entry.ready and (entry.pool=='auto' or entry.pool=='offline') and core.storage:exists(entry.path)then
+   local id=entry.parent_id
+   local seen={}
+   while id and not seen[id]do
+    seen[id]=true
+    local sum=totals[id] or {bytes=0,downloaded=0,direct_bytes=0,direct_downloaded=0}
+    totals[id]=sum
+    sum.bytes=sum.bytes+(entry.size or 0)
+    sum.downloaded=sum.downloaded+1
+    if id==entry.parent_id and Library.supported(entry)then
+     sum.direct_bytes=sum.direct_bytes+(entry.size or 0)
+     sum.direct_downloaded=sum.direct_downloaded+1
+    end
+    local folder=(state.folders or {})[id]
+    id=folder and folder.parent_id
+   end
+  end
+ end
+ return totals
+end
+function C.stats(core,parent,downloads)
+ local state=core.state;local count,folders,empty,visible_count,total_bytes
  if (state.listings or {})[parent]and state.listings[parent].complete then
-  count,folders,visible_count=0,0,0
+  count,folders,visible_count,total_bytes=0,0,0,0
   for _,e in ipairs(core:cachedList(parent))do
-   if not require('gdriveshelf/metadata').isService(e)then
+   if not Metadata.isService(e)then
     visible_count=visible_count+1
-    if e.is_folder then folders=folders+1 elseif Library.supported(e)then count=count+1 end
+    if e.is_folder then
+     folders=folders+1
+    elseif Library.supported(e)then
+     count=count+1
+     local size=tonumber(e.size)
+     if total_bytes then total_bytes=size and size>=0 and total_bytes+size or nil end
+    end
    end
   end
   empty=visible_count==0
  end
- local function belongs(id)
-  local seen={};while id and not seen[id]do
-   if id==parent then return true end;seen[id]=true;id=(state.folders or {})[id]and state.folders[id].parent_id
-  end
- end
- local bytes,downloaded=0,0
- for _,e in pairs(state.entries)do
-  if e.ready and (e.pool=='auto'or e.pool=='offline')and belongs(e.parent_id)and core.storage:exists(e.path)then
-   bytes=bytes+(e.size or 0);downloaded=downloaded+1
-  end
- end
- return {count=count,folders=folders,visible_count=visible_count,empty=empty,bytes=bytes,downloaded=downloaded}
+ local sum=(downloads or C.downloadStats(core))[parent]or {}
+ return {count=count,folders=folders,visible_count=visible_count,empty=empty,total_bytes=total_bytes,
+  bytes=sum.bytes or 0,downloaded=sum.downloaded or 0,
+  direct_bytes=sum.direct_bytes or 0,direct_downloaded=sum.direct_downloaded or 0}
 end
 function C.order(entries,mode,reverse,known_first,compare)
+ if mode=='drive_name'then
+  local originals,sortable={},{}
+  for _,entry in ipairs(entries)do
+   originals[entry.id]=entry
+   sortable[#sortable+1]={id=entry.id,name=entry.drive_name or entry.name,pinned=entry.pinned,known=entry.known,is_folder=true}
+  end
+  local ordered=C.order(sortable,'natural',reverse,known_first,compare)
+  for i,entry in ipairs(ordered)do ordered[i]=originals[entry.id]end
+  return ordered
+ end
  local ordered=Library.ordered(entries,mode,reverse,compare);local groups={{},{},{}}
  for _,e in ipairs(ordered)do
   local rank=e.pinned and 1 or (known_first~=false and e.known and 2 or 3)

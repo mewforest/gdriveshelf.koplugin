@@ -24,11 +24,15 @@ function Jobs:enqueue(key,task,callback,front,before,progress,local_task,options
    if self.active and self.active.key==key then self.active.front=true end
    for i,j in ipairs(self.queue)do if j.key==key then j.front=true;table.remove(self.queue,i);table.insert(self.queue,1,j);break end end
   end
+  if options and options.automatic==false then
+   if self.active and self.active.key==key then self.active.automatic=false end
+   for _,job in ipairs(self.queue)do if job.key==key then job.automatic=false;break end end
+  end
   return false
  end
  self.task_seq=self.task_seq+1
  local timeout=options and tonumber(options.timeout)
- local job={key=key,task=task,callback=callback,before=before,progress=progress,local_task=local_task,ref=self.task_seq,front=front==true,retry=options and options.retry,timeout=timeout and timeout>0 and timeout<86400 and timeout or nil};self.keys[key]=true
+ local job={key=key,task=task,callback=callback,before=before,progress=progress,local_task=local_task,ref=self.task_seq,front=front==true,retry=options and options.retry,automatic=options and options.automatic,timeout=timeout and timeout>0 and timeout<86400 and timeout or nil};self.keys[key]=true
  if front then table.insert(self.queue,1,job) else self.queue[#self.queue+1]=job end
  self:trace(job,'queued');self:pump();return true
 end
@@ -47,7 +51,7 @@ function Jobs:retain(job)
  table.insert(self.queue,index,job)
 end
 function Jobs:pump()
- if self.active or self.stopping or #self.queue==0 then return end
+ if self.active or self.stopping or self.hold or #self.queue==0 then return end
  local index=1
  if self.offline or self.paused then
   index=nil;for i,job in ipairs(self.queue)do if job.local_task then index=i;break end end

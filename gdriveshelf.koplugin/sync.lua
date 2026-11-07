@@ -32,14 +32,47 @@ function Sync:isOffline() return type(self.offline)=='function' and self.offline
 function Sync:snapshot(entry,data)
     local lua,e=self.sdr.encode(data); if not lua then return nil,err('invalid_local_metadata',e) end
     local old=self.state.pending[entry.id]; local base=self.state.bases[entry.id] or {}
+    if old and old.chapter_status and (old.entry.name~=entry.name or old.entry.parent_id~=entry.parent_id or not self.sdr.sameBook(old.book_stamp,entry)) then
+        return nil,err('book_changed','This chapter has changed; its pending progress was preserved')
+    end
     self.state.next_pending_seq=(self.state.next_pending_seq or 0)+1
     self.state.revision=(self.state.revision or 0)+1
     local pending={entry=copy(entry),lua=lua,book_stamp=stamp(entry),seq=old and old.seq or self.state.next_pending_seq,revision=self.state.revision}
     if old then
         pending.base_lua=old.base_lua; pending.base_stamp=copy(old.base_stamp); pending.base_book_stamp=copy(old.base_book_stamp)
+        if old.chapter_status and self.sdr.summary(data).status==old.chapter_status then
+            pending.chapter_status=old.chapter_status; pending.chapter_status_date=old.chapter_status_date
+        end
     else pending.base_lua=base.lua; pending.base_stamp=copy(base.stamp); pending.base_book_stamp=copy(base.book_stamp) end
     self.state.pending[entry.id]=pending
     if self.state.conflicts[entry.id] then self.state.conflicts[entry.id].local_lua=lua end
+    return pending
+end
+function Sync:markChapter(entry,read)
+    local old=self.state.pending[entry.id]
+    if old and (old.entry.name~=entry.name or old.entry.parent_id~=entry.parent_id or not self.sdr.sameBook(old.book_stamp,entry)) then
+        return nil,err('book_changed','This chapter has changed; its pending progress was preserved')
+    end
+    local status=read and 'complete' or 'reading'
+    local date=os.date('%Y-%m-%d')
+    local data={}
+    if old and not old.status_only then
+        local e; data,e=self.sdr.decode(old.lua)
+        if not data then return nil,err('invalid_pending',e) end
+    end
+    local pending,e=self:snapshot(entry,self.sdr.setReadingStatus(data,status,date))
+    if not pending then return nil,e end
+    pending.chapter_status=status
+    pending.chapter_status_date=date
+    if not old or old.status_only then
+        pending.status_only=true
+        pending.lua=nil
+        local saved=self.state.conflicts[entry.id]
+        if saved then
+            local remote=saved.remote_lua and self.sdr.decode(saved.remote_lua) or {}
+            saved.local_lua=self.sdr.encode(self.sdr.setReadingStatus(remote,status,date))
+        end
+    end
     return pending
 end
 function Sync:pendingList()
@@ -90,15 +123,44 @@ end
 function Sync:push(entry,pending)
     if self:isOffline() then return nil,err('offline','Sync is offline') end
     if not pending or not pending.entry or pending.entry.id~=entry.id then return nil,err('invalid_pending','Pending document identity mismatch') end
-    local local_data,le=self.sdr.decode(pending.lua); if not local_data then return nil,err('invalid_pending',le) end
+    local local_data,write_lua=nil,pending.lua
+    if pending.status_only then
+        if pending.chapter_status~='complete' and pending.chapter_status~='reading' then return nil,err('invalid_pending','Invalid chapter status') end
+    else
+        local le; local_data,le=self.sdr.decode(write_lua)
+        if not local_data then return nil,err('invalid_pending',le) end
+    end
     local base_data
     if pending.base_lua then local be; base_data,be=self.sdr.decode(pending.base_lua); if not base_data then return nil,err('invalid_base',be) end end
     local current=entry
     if self.provider.stat then local se; current,se=self.provider:stat(entry.id); if not current then return nil,se or err('not_found','Source document disappeared') end end
+    if pending.chapter_status and not self.provider.stat then return nil,err('unguarded_write','Source chapter could not be verified') end
+    if pending.chapter_status and (current.id~=entry.id or current.name~=pending.entry.name or current.parent_id~=pending.entry.parent_id) then
+        return conflict(pending,{book_stamp=stamp(current)},'book_changed')
+    end
     local remote,re=self:pull(current); if not remote then return nil,re end
     if current.name~=pending.entry.name or current.parent_id~=pending.entry.parent_id
+        or (pending.chapter_status and not self.sdr.sameBook(pending.book_stamp,stamp(current)))
         or changed(self.sdr,pending.book_stamp,stamp(current)) or changed(self.sdr,pending.base_book_stamp,stamp(current)) then return conflict(pending,remote,'book_changed') end
-    local action=self.sdr.decide(base_data,local_data,remote.data)
+    local action
+    if pending.status_only then
+        local remote_status=self.sdr.summary(remote.data).status
+        local base_status=self.sdr.summary(base_data).status
+        if remote_status==pending.chapter_status or (not remote.data and pending.chapter_status=='reading') then
+            remote.action='same'; return remote
+        end
+        local_data=self.sdr.setReadingStatus(copy(remote.data) or {},pending.chapter_status,pending.chapter_status_date)
+        local le; write_lua,le=self.sdr.encode(local_data)
+        if not write_lua then return nil,err('invalid_local_metadata',le) end
+        if base_data and remote_status~=base_status then
+            local local_change=copy(pending)
+            local_change.lua=write_lua
+            return conflict(local_change,remote)
+        end
+        action='push'
+    else
+        action=self.sdr.decide(base_data,local_data,remote.data)
+    end
     if action=='conflict' then return conflict(pending,remote) end
     if action=='same' or action=='pull' then
         remote.action=action; return remote
@@ -111,7 +173,7 @@ function Sync:push(entry,pending)
         local verified,ve=self:locate(entry); if not verified then return nil,ve end
         if not verified.folder or verified.folder.id~=folder.id or verified.metadata then return nil,err('concurrent_creation','Remote sidecar changed during creation; retry from fresh state') end
     end
-    local path,pe=self.storage:writeTemp(pending.lua); if not path then return nil,pe end
+    local path,pe=self.storage:writeTemp(write_lua); if not path then return nil,pe end
     local ok,uploaded,ue=pcall(self.provider.upload,self.provider,folder.id,self.sdr.metadataName(entry.name),path,remote.metadata and remote.metadata.id,remote.stamp and remote.stamp.etag)
     if self.storage.remove then self.storage:remove(path) end
     if not ok then return nil,err('upload_failed',tostring(uploaded)) end
@@ -122,13 +184,19 @@ function Sync:push(entry,pending)
         local verified,ve=self:locate(entry); if not verified then return nil,ve end
         if not verified.metadata or verified.metadata.id~=uploaded.id then return nil,err('concurrent_creation','Metadata changed during creation; all versions were preserved') end
     end
-    return {action='pushed',data=local_data,lua=pending.lua,stamp=stamp(uploaded),book_stamp=stamp(current)}
+    return {action='pushed',data=local_data,lua=write_lua,stamp=stamp(uploaded),book_stamp=stamp(current)}
 end
 -- Call in the parent, then atomically persist state. A later snapshot is retained.
 function Sync:commit(entry,pending,result)
     if result.action=='conflict' then
         local saved=copy(result.conflict); local latest=self.state.pending[entry.id]
-        if latest then saved.local_lua=latest.lua end
+        if latest and latest.lua then saved.local_lua=latest.lua
+        elseif latest and latest.status_only and saved.remote_lua then
+            local remote=self.sdr.decode(saved.remote_lua)
+            if remote then
+                saved.local_lua=self.sdr.encode(self.sdr.setReadingStatus(remote,latest.chapter_status,latest.chapter_status_date))
+            end
+        end
         self.state.conflicts[entry.id]=saved; return result
     end
     if result.action~='pushed' and result.action~='same' and result.action~='pull' then return nil,err('invalid_result','Unknown synchronization result') end
@@ -153,7 +221,8 @@ function Sync:resolve(id,choice)
         if saved.remote_lua then data,e=self.sdr.decode(saved.remote_lua); if not data then return nil,err('invalid_conflict',e) end end
         self.state.bases[id]={lua=saved.remote_lua,stamp=copy(saved.stamp),book_stamp=copy(saved.book_stamp)}
         self.state.pending[id]=nil; self.state.conflicts[id]=nil
-        return {data=data,lua=saved.remote_lua,stamp=copy(saved.stamp),action='pull'}
+        if self.state.chapter_marks then self.state.chapter_marks[id]=nil end
+        return {data=data,lua=saved.remote_lua,stamp=copy(saved.stamp),book_stamp=copy(saved.book_stamp),action='pull'}
     end
     return nil,err('invalid_choice','Choose local or remote')
 end

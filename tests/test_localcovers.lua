@@ -8,6 +8,11 @@ local function png(w,h)
  return '\137PNG\r\n\26\n'..be(13)..'IHDR'..be(w)..be(h)..string.rep('\0',16)
 end
 local function write(path,data)local f=assert(io.open(path,'wb'));assert(f:write(data));f:close()end
+local function withJobsDirectory(c)
+ local ffi=require('ffi');pcall(ffi.cdef,'int mkdir(const char *, unsigned int);')
+ H.eq(ffi.C.mkdir(c.storage.root,448),0);H.eq(ffi.C.mkdir(c.storage.root..'/jobs',448),0)
+ return function()assert(os.remove(c.storage.root..'/jobs'));assert(os.remove(c.storage.root))end
+end
 local function fixture()
  local base=os.tmpname();os.remove(base)
  local path=base..'.cbz';write(path,'verified complete archive')
@@ -30,6 +35,10 @@ local function fixture()
  local jobs={queue={},keys={},nonce='test'}
  function jobs:enqueue(key,task,done,front,before,progress,local_task,options)
   if self.keys[key]then return false end;self.keys[key]=true;self.queue[#self.queue+1]={key=key,task=task,done=done,before=before,local_task=local_task,options=options};return true
+ end
+ function jobs:cancel(key)
+  self.keys[key]=nil
+  for i,j in ipairs(self.queue)do if j.key==key then table.remove(self.queue,i);j.done(nil,{code='cancelled'});return end end
  end
  local core=setmetatable({storage=fs,jobs=jobs,settings={offline=true},state={entries={book=c},docs={book=e}},entries={e}},K)
  Covers.attach(K)
@@ -121,4 +130,51 @@ H.test('a successful local cover can be regenerated after metadata LRU eviction'
  local cover=assert(c:localCover(e));os.remove(cover.path);c.state.entries['thumb:book']=nil
  H.eq(c:ensureLocalCovers({e}),1)
  T.build=original;clean()
+end)
+H.test('light mode drops automatic cover tasks but keeps manual subscribers',function()
+ local c,e,clean=fixture();assert(c:ensureLocalCovers({e})==1)
+ c.settings.light_mode=true;c:cancelAutomaticCovers();H.eq(#c.jobs.queue,0);H.eq(c:ensureLocalCovers({e}),0)
+ c.settings.light_mode=false;assert(c:ensureLocalCovers({e})==1)
+ assert(c:extractFolderCover({id=e.parent_id},function()end))
+ c.settings.light_mode=true;c:cancelAutomaticCovers();H.eq(#c.jobs.queue,1)
+ c.jobs:cancel(c.jobs.queue[1].key);clean()
+end)
+H.test('page gallery keeps only one visible batch and releases archive pin before saving',function()
+ local c,e,clean=fixture()
+ local clean_dir=withJobsDirectory(c)
+ local original=Covers.galleryPages
+ Covers.galleryPages=function(entry,cached,first,count,paths,w,h)
+  H.eq(entry,e);assert(cached.path);local pages={}
+  for slot=1,count do write(paths[slot],png(w,h));pages[slot]={number=first+slot-1,path=paths[slot]}end
+  return {total=10,first=first,pages=pages}
+ end
+ local function run()
+  local job=table.remove(c.jobs.queue,1);assert(job.before());assert(job.local_task);H.eq(job.options.timeout,25)
+  local data=job.task();c.jobs.keys[job.key]=nil;job.done(data)
+ end
+ local gallery=assert(c:coverGallery(e));assert(c:protected().book)
+ local thumb;gallery:load(1,function(result)H.eq(#result.pages,6);thumb=result.pages[1].path end);run();assert(c.storage:exists(thumb))
+ local selected;gallery:select(2,function(path)selected=assert(path)end);run();assert(c.storage:exists(selected))
+ gallery:release();assert(not c:protected().book and not c.storage:exists(thumb)and c.storage:exists(selected))
+ local cancelled=assert(c:coverGallery(e));cancelled:load(1,function()error('Cancelled gallery callback fired')end)
+ cancelled:close();H.eq(#c.jobs.queue,0);assert(not c:protected().book)
+ assert(c.storage:exists(selected),'Another gallery removed the already selected cover')
+ gallery:close();assert(not c.storage:exists(selected))
+ Covers.galleryPages=original
+ clean_dir();clean()
+end)
+H.test('choosing a local image defers decoding and retains only a bounded draft file',function()
+ local c,e,clean=fixture()
+ local clean_dir=withJobsDirectory(c)
+ local Thumbnails=require('gdriveshelf/thumbnails');local original=Thumbnails.render
+ local reads=0
+ function c.storage:read(path,limit)H.eq(path,'/picked.jpg');H.eq(limit,8*1048576);reads=reads+1;return 'raw input'end
+ Thumbnails.render=function(data,path)H.eq(data,'raw input');write(path,png(320,440));return {path=path}end
+ local prepared,discard
+ local key=c:prepareFolderCover('/picked.jpg',function(path,err,cleanup)prepared=assert(path,err and err.message);discard=cleanup end)
+ H.eq(reads,0);assert(key and not prepared)
+ local job=table.remove(c.jobs.queue,1);H.eq(job.key,key);assert(job.local_task);job.done(assert(job.task()))
+ H.eq(reads,1);assert(c.prepared_cover_paths[prepared] and c.storage:exists(prepared))
+ discard();assert(not c.prepared_cover_paths[prepared] and not c.storage:exists(prepared))
+ Thumbnails.render=original;clean_dir();clean()
 end)

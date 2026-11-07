@@ -110,7 +110,7 @@ end)
 test('foreground download retains open intent through retry and sleep and cleans stale partials',function()
  for _,sleep in ipairs{false,true}do
   now=1000;local c,j,finish,advance=setup();local attempts,calls,cleaned=0,0,0
-  local old_remove=c.storage.remove;c.storage.remove=function(self,path)if path=='/cache/book.incoming-'..j.nonce..'.part'then cleaned=cleaned+1 end;return old_remove(self,path)end
+  local old_remove=c.storage.remove;c.storage.remove=function(self,path)if path=='/cache/book.incoming-'..j.nonce..'x1.part'then cleaned=cleaned+1 end;return old_remove(self,path)end
   local entry={id='book',name='Book.cbz',parent_id='folder',size=10,version='1'}
   c.provider_factory=function()return {credentials={},download=function()attempts=attempts+1;if attempts==1 and not sleep then return nil,{code='network'}end;return {size=10}end,stat=function()return entry end}end
   c:open(entry,function(path,err)calls=calls+1;assert(path=='/cache/book'and not err)end)
@@ -132,6 +132,22 @@ test('network state transitions notify the UI once rather than leaving stale onl
  c.onchange=function(kind)if kind=='network_state'then states[#states+1]=c:networkState()end end
  c:syncNetworkJobs();c:syncNetworkJobs();c:suspend();c:wake()
  H.eq(table.concat(states,','),'online,sleep,online')
+end)
+test('light mode pauses automatic downloads while keeping a foreground download and explicit retry',function()
+ now=1000
+ local c,j=setup()
+ local manual={id='manual',name='Manual.cbz',parent_id='p',size=10}
+ local auto={id='auto',name='Auto.cbz',parent_id='p',size=10}
+ c:open(manual,function()end)
+ c:download(auto,'auto',nil,true)
+ assert(j.active.key=='download:manual' and j.keys['download:auto'])
+ c:setLightMode(true)
+ assert(j.active.key=='download:manual'and c.waiters.manual and not j.keys['download:auto'])
+ assert(c.state.downloads.auto and c.state.downloads.auto.automatic and not c.state.downloads.auto.error)
+ c:resume()
+ assert(not j.keys['download:auto'])
+ c:resetNetwork(nil,true)
+ assert(j.keys['download:auto']and c.state.downloads.auto.automatic==false)
 end)
 os.time=real_time
 assert(failures==0,tostring(failures)..' network state tests failed')

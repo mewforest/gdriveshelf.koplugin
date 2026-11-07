@@ -28,7 +28,10 @@ function T.dimensions(s)
 end
 function T.build(entry,cached,provider,path)
  local Z=require('gdriveshelf/zipcover');local file;local fetched=0
- if cached then file=io.open(cached.path,'rb')end
+ if cached then
+  file=io.open(cached.path,'rb')
+  if not file then return nil,{code='preview',message='Cannot read local archive'}end
+ end
  local function read(a,b)
   if file then file:seek('set',a);return file:read(b-a+1)end
   local data,err=provider:range(entry,a,b,8*1048576);if data then fetched=fetched+#data end;return data,err
@@ -37,9 +40,9 @@ function T.build(entry,cached,provider,path)
  if not data then return nil,why end
  local result,err=T.render(data,path);if result then result.range_bytes=fetched end;return result,err
 end
-function T.render(data,path)
+function T.render(data,path,max_w,max_h)
  local w,h=T.dimensions(data);if not w then return nil,{code='preview',message='Unsupported or oversized cover image'}end
- local scale=math.min(320/w,440/h,1)
+ local scale=math.min((max_w or 320)/w,(max_h or 440)/h,1)
  local ok,bb=pcall(function()return require('ui/renderimage'):renderImageData(data,#data,false,math.max(1,math.floor(w*scale)),math.max(1,math.floor(h*scale)))end)
  if not ok or not bb then return nil,{code='preview',message='Cannot render cover image'}end
  local saved=pcall(bb.writePNG,bb,path);bb:free()

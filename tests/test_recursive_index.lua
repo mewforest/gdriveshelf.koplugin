@@ -52,11 +52,16 @@ H.test('failed grouped listing retains queue and cannot mark partial work comple
  local p=provider({});p.listParents=function()return nil,{code='network'}end
  local c,_,drain=F.new(nil,p);c:indexHome();drain();H.eq(c.state.catalog.queue[1],'home');assert(not c.state.listings.home);H.eq(c.state.catalog.token,'before')
 end)
-H.test('a save between grouped buckets retains every parent until the group finishes',function()
+H.test('grouped buckets become durable together with their advanced checkpoint',function()
  local p=provider({home={folder('a','home'),folder('b','home')},a={book('aa','a')},b={book('bb','b')}})
  local c,_,drain=F.new(nil,p);local observed=false;local save=c.save
  c.save=function(self)
-  if self.state.listings.a and not self.state.listings.b then observed=true;H.eq(self.state.catalog.queue[1],'a');H.eq(self.state.catalog.queue[2],'b')end
+  assert((self.state.listings.a~=nil)==(self.state.listings.b~=nil))
+  if self.state.listings.a then
+   observed=true
+   H.eq(#self.state.catalog.queue,0)
+   assert(self.state.catalog.members.aa and self.state.catalog.members.bb)
+  end
   return save(self)
  end
  c:indexHome();drain();assert(observed);assert(c.state.catalog.members.bb)
@@ -84,15 +89,18 @@ H.test('changing home while a request runs ignores its obsolete result',function
  c.settings.home='other';local result,e=old.run(p);old.done(result,e);assert(not c.state.docs.old);assert(not c.state.catalog.token)
  c:catalogRefresh(true);H.eq(c.state.catalog.home,'other')
 end)
-H.test('replaying a removal after interrupted persistence also repairs parent membership',function()
+H.test('a persistence exception preserves the previous checkpoint for removal replay',function()
  local p=provider({home={folder('a','home')},a={folder('nested','a')},nested={book('book','nested')}});local c,_,drain=F.new(nil,p);c:indexHome();drain()
  p.changes=function()return{changes={{file_id='a',removed=true}},new_start_token='removed'}end
- local snapshot;local function copy(v)if type(v)~='table'then return v end;local t={};for k,x in pairs(v)do t[k]=copy(x)end;return t end
  c.save=function(self)
-  if not self.state.catalog.members.a then snapshot=copy(self.state);error('simulated process exit')end;return true
+  if not self.state.catalog.members.a then error('simulated writer error')end;return true
  end
- c:catalogRefresh(true);assert(not pcall(drain));assert(snapshot)
- local resumed,_,finish=F.new(c.settings,p,snapshot);resumed:catalogRefresh(true);finish();H.eq(#resumed:cachedList('home'),0);assert(not resumed.state.catalog.members.book)
+ c:catalogRefresh(true);drain()
+ H.eq(c:indexStatus().phase,'error')
+ H.eq(#c:cachedList('home'),1)
+ H.eq(c.state.catalog.token,'after')
+ assert(c.state.catalog.members.book)
+ local resumed,_,finish=F.new(c.settings,p,c.state);resumed:catalogRefresh(true);finish();H.eq(#resumed:cachedList('home'),0);assert(not resumed.state.catalog.members.book)
 end)
 H.test('unrelated account file names are discarded before worker IPC',function()
  local p=provider({home={}});local c,_,drain,jobs=F.new(nil,p);c:indexHome();drain()
