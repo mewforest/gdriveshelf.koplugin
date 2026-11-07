@@ -9,7 +9,7 @@ Google Drive Shelf is an unofficial KOReader plugin. It downloads a complete doc
 
 | Library | Comic folder and background download | Storage and cache |
 | :---: | :---: | :---: |
-| Manga library in a three-column grid | Comic folder with a cover, Continue button, chapters and background download | Storage and cache with usage bars and cleanup actions |
+| <a href="docs/screenshots/library-grid-3x2-en.png"><img src="docs/screenshots/library-grid-3x2-en.png" width="245" alt="Manga library in a three-column grid"></a> | <a href="docs/screenshots/background-download-en.png"><img src="docs/screenshots/background-download-en.png" width="245" alt="Comic folder with a cover, Continue button, chapters and background download"></a> | <a href="docs/screenshots/storage-en.png"><img src="docs/screenshots/storage-en.png" width="245" alt="Storage and cache with usage bars and cleanup actions"></a> |
 
 ## Get started
 
@@ -43,13 +43,13 @@ New installations use a **3×2 folder grid** and a **chapter list**. Chapter til
 
 | Folder list | Settings |
 | --- | --- |
-| Folders with cached information | Grouped plugin settings |
+| ![Folders with cached information](docs/screenshots/titles-en.png) | ![Grouped plugin settings](docs/screenshots/settings-en.png) |
 
 Long-press a file or folder for downloads and other actions. The selection mode lets you keep several files offline at once. Folder cards show the downloaded count and size at the upper left, with the known total count and size at the upper right. Folder and chapter grids have independent layout presets. Containers show a subfolder count instead. Confirmed empty folders are hidden by default; unknown folders remain visible. A rough opened-chapter bar summarizes reading activity. Unknown counts remain unknown; a matching `.sdr` indicates an opened document, not a completed chapter.
 
 | Folder actions | Document information |
 | --- | --- |
-| Folder actions and offline downloads | Cover and descriptive metadata |
+| ![Folder actions and offline downloads](docs/screenshots/library-actions-en.png) | ![Cover and descriptive metadata](docs/screenshots/manga-info-en.png) |
 
 Plugin history groups comics by folder and keeps ordinary books as individual entries. CBZ/CBR/CB7 are detected as comics; other formats are books. A folder's **Content type** can override this, including for PDF comics. History survives archive eviction.
 
@@ -83,7 +83,7 @@ The comic-folder header shows the cover, description, known document totals and 
 
 | Chapter tiles | Cover editor | Page gallery |
 | --- | --- | --- |
-| Chapter tiles with a cached cover | Metadata editor with current cover | Choosing a cover page |
+| ![Chapter tiles with a cached cover](docs/screenshots/chapters-stable-en.png) | ![Metadata editor with current cover](docs/screenshots/metadata-editor-en.png) | ![Choosing a cover page](docs/screenshots/cover-gallery-en.png) |
 
 Optional **Index home folder recursively** asks for explicit consent and scans the selected home tree, excluding SDR contents. Documents are never downloaded for this catalog. After the first pass, ordinary refresh uses the [Drive change log](https://developers.google.com/workspace/drive/api/guides/manage-changes), with checks on catalog entry and wake limited to once per 30 seconds; manual Refresh checks immediately. **Reindex library** opens a progress screen for a repair pass. Pause it and resume from the saved checkpoint, or let it continue in the background. No shared cloud tree manifest is created. Covers and descriptions are separate low-priority tasks.
 
@@ -141,4 +141,4 @@ CI checks pull requests and automatically publishes versioned plugin-only archiv
 
 ## License
 
-Original code: [MIT](LICENSE). Mozilla CA bundle: [MPL 2.0](gdriveshelf.koplugin/CA-BUNDLE.md). Artwork in interface screenshots belongs to its respective copyright holders.
+Original code: [MIT](LICENSE). Mozilla CA bundle: [MPL 2.0](gdriveshelf.koplugin/CA-BUNDLE.md). The screenshots use a fictional library with artwork created for the demo.
