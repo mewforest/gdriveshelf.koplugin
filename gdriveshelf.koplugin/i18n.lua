@@ -1,6 +1,8 @@
 -- English source strings with a bundled Russian catalog. No global gettext mutation.
 local ru={
  ["Continue"]="Продолжить",
+ ["Continue from “%s”"]="Продолжить с главы «%s»",
+ ["Read “%s”"]="Читать «%s»",
  ["Cloud progress ready on reopen · %s"]="Облачный прогресс готов к открытию · %s",
  ["Image exceeds the preview pixel limit"]="Изображение превышает лимит разрешения",
  ["Unsupported or damaged preview image"]="Изображение предпросмотра повреждено или не поддерживается",
@@ -60,7 +62,8 @@ local ru={
  ["Chapters to prefetch in light mode"]="Лёгкий режим · глав для предзагрузки",
  ["Check the home folder and fetch recent Drive changes? Saved files and reading progress will be kept."]="Проверить домашнюю папку и последние изменения на Drive? Скачанные файлы и прогресс чтения сохранятся.",
  ["Refresh folder listing and metadata"]="Обновить список и метаданные папки",
- ["Downloaded %d (%s)"]="Скачано %d (%s)",
+ ["In cloud: %s"]="Облако: %s",
+ ["On device: %s"]="Скачано: %s",
  ["Light mode (less background work)"]="Лёгкий режим (меньше фоновых задач)",
  ["Use page %d as the folder cover?"]="Использовать страницу %d как обложку папки?",
  ["Go online to index the library."]="Подключитесь к сети для индексации библиотеки.",
@@ -108,7 +111,7 @@ local ru={
  ["Waiting for a connection"]="Ожидание соединения",
  ["Load detailed progress for all chapters"]="Загрузить прогресс всех глав",
  ["Go to the chapter page when opening a folder"]="Открывать страницу с главой для продолжения",
- ["Chapter grid size"]="Размер сетки документов",
+ ["Chapter grid size without header"]="Сетка глав без шапки",
  ["Folder grid size"]="Размер сетки папок",
  ["Original folder name on Drive"]="Исходное имя папки на Drive",
  ["Download folder (including subfolders)"]="Скачать папку (включая подпапки)",
@@ -522,4 +525,13 @@ function I.gettext(message)
  return message
 end
 function I.format(message,...)return string.format(I.gettext(message),...)end
+function I.fileCount(count)
+ if I.language()~='ru' then return count..(count==1 and ' file' or ' files')end
+ local digit=count%10
+ local tens=count%100
+ if tens>=11 and tens<=14 then return count..' файлов'end
+ if digit==1 then return count..' файл'end
+ if digit>=2 and digit<=4 then return count..' файла'end
+ return count..' файлов'
+end
 return I

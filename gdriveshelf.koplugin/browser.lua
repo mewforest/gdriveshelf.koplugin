@@ -87,11 +87,7 @@ function B.header(o)
   local width=coverColumnWidth or resumeWidth
   resume=Button:new{text=resumeText,enabled=o.resume.enabled,width=width,height=Screen:scaleBySize(36),
    text_font_face='cfont',text_font_size=16,padding_h=gap,padding_v=0,callback=o.resume.callback}
-  local detailWidth=compact_width-width-gap
-  local detail=V:new{align='left',TextLine:new{text=o.resume.detail or '',face=Font:getFace('smallinfofont'),max_width=detailWidth}}
-  if o.resume.date then
-   detail[#detail+1]=TextLine:new{text=o.resume.date,face=Font:getFace('x_smallinfofont'),max_width=detailWidth}
-  end
+  local detail=TextLine:new{text=o.resume.detail or '',face=Font:getFace('smallinfofont'),max_width=compact_width-width-gap}
   return H:new{align='center',resume,HS:new{width=gap},detail}
  end
  if o.summary then
@@ -134,6 +130,7 @@ function B.header(o)
   end
   addLine(o.summary.stats,Screen:scaleBySize(34))
   addLine(o.summary.cached,Screen:scaleBySize(34))
+  addLine(o.summary.reading_date,Screen:scaleBySize(34))
   addLine(o.summary.description,2*math.floor((1+Text.line_height)*smallFace.size+.5),o.info)
   details:resetLayout()
   row[#row+1]=details

@@ -1,6 +1,7 @@
 -- Shelf-facing interactions; core storage/network behavior stays independently testable.
 return function(Shelf,env)
- local tr=require('gdriveshelf/i18n').gettext
+ local I18N=require('gdriveshelf/i18n')
+ local tr=I18N.gettext
  local Catalog=require('gdriveshelf/catalog');local Library=require('gdriveshelf/library');local Metadata=require('gdriveshelf/metadata')
  local Requests=require('gdriveshelf/requests');local shared=env.shared
  local function UI()return require('ui/uimanager')end
@@ -79,7 +80,7 @@ return function(Shelf,env)
   for _,e in ipairs(Library.ordered(files,self.settings.sort,self.settings.reverse,self.core.natural))do result[#result+1]=e end
   return result
  end
- function Shelf:folderRows(parent,entries,offline)
+ function Shelf:folderRows(parent,entries,offline,resume_id)
   local rows={};local info=self.core:titleInfo(parent)
   for _,entry in ipairs(self:orderedEntries(Metadata.visible(entries,self.settings.show_service,info.cover)))do
    local e=entry;local cached=self.core:cached(e.id)
@@ -113,7 +114,9 @@ return function(Shelf,env)
     if summary and summary.status=='complete'then
      name=name..' · '..tr('Read')
     elseif self.settings.light_mode and not(self.folder_visit and self.folder_visit.detailed_progress)then
-     if summary or self.opened_chapters and self.opened_chapters[e.id]then name=name..' · '..tr('Previously opened')end
+     if e.id~=resume_id and (summary or self.opened_chapters and self.opened_chapters[e.id])then
+      name=name..' · '..tr('Previously opened')
+     end
     elseif summary and summary.percent then
      name=name..string.format(' · %d%%',math.floor(summary.percent*100+.5))
     end
@@ -242,10 +245,25 @@ return function(Shelf,env)
   local columns,rows=gridSize(hasFolders and self.settings.folder_grid or not hasFolders and self.settings.file_grid)
   local visit=self.folder_visit or {}
   local header=self.settings.info_header~=false and comic and not visit.collapsed
-  local countText=count>0 and string.format(tr('%d files'),count)or nil
-  if countText and total then countText=countText..' · '..env.bytes(total)end
-  local downloadedText=downloaded>0 and string.format(tr('Downloaded %d (%s)'),downloaded,env.bytes(downloadedBytes))or nil
+  if header and grid and not hasFolders then rows=math.max(1,rows-1)end
+  local countText,downloadedText
+  if count>0 then
+   local cloud=I18N.fileCount(count)..(total and ' · '..env.bytes(total) or '')
+   countText=I18N.format('In cloud: %s',cloud)
+   downloadedText=I18N.format('On device: %s',I18N.fileCount(downloaded)..' · '..env.bytes(downloadedBytes))
+  end
   local resume=visit.resume
+  local resume_id=resume and resume.resume and resume.entry and resume.entry.id or nil
+  local readingDate
+  if header then
+   local history=resume_id and (self.core.state.history or {})[resume_id]
+   local opened=tonumber((self.core.state.last_opened or {})[parent] or (history and history.time))
+   if opened and opened>0 then
+    readingDate=I18N.format('Last opened: %s',os.date('%d.%m %H:%M',opened))
+   elseif resume and resume.remote_time and resume.remote_time>0 then
+    readingDate=I18N.format('Progress updated: %s',os.date('%d.%m %H:%M',resume.remote_time))
+   end
+  end
   local conflict=self.core.metadataConflict and self.core:metadataConflict(folder)~=nil
   local signature=table.concat({
    tostring(parent),tostring(folder.parent_id),info.title or folder.name,header and(info.cover_path or '')or '',
@@ -253,10 +271,11 @@ return function(Shelf,env)
    tostring(grid),tostring(hasFolders),columns,rows,tostring(self:downloadActivity()~=nil),tostring(conflict),
    tostring(resume and resume.entry and self:chapterLabel(resume.entry,info)),
    tostring(resume and resume.entry and resume.entry.id),tostring(resume and resume.resume),
-   tostring(resume and resume.summary and resume.summary.status),tostring(resume and resume.remote_time),
+   readingDate or '',
    tostring(self.startup_loading),tostring(self.browser_loading and self.startup_loading)
   },'|')
-  return {info=info,folder=folder,hasFolders=hasFolders,comic=comic,grid=grid,header=header,columns=columns,rows=rows,stats=countText,cached=downloadedText,conflict=conflict,signature=signature}
+  return {info=info,folder=folder,hasFolders=hasFolders,comic=comic,grid=grid,header=header,columns=columns,rows=rows,
+   stats=countText,cached=downloadedText,reading_date=readingDate,resume_id=resume_id,conflict=conflict,signature=signature}
  end
  function Shelf:revealResume()
   local visit,menu=self.folder_visit,self.folder_menu
@@ -383,7 +402,7 @@ return function(Shelf,env)
   local view=self:browserPresentation(self.folder_id,self.folder_entries or {})
   if self.browser_header_signature~=view.signature then return self:showFolder(self.folder_id,self.folder_offline,false,true)end
   local anchor=self:folderAnchor(m)
-  self:replaceMenu(m,self:folderRows(self.folder_id,self.folder_entries or {},self.folder_offline))
+  self:replaceMenu(m,self:folderRows(self.folder_id,self.folder_entries or {},self.folder_offline,view.resume_id))
   self:restoreFolderAnchor(m,anchor)
   self:revealResume()
   local visit=self.folder_visit
@@ -436,23 +455,15 @@ return function(Shelf,env)
   local screen=require('device').screen
   local summary
   if view.header then
-   summary={cover_path=info.cover_path,text=info.title or folder.name,description=info.description,stats=view.stats,cached=view.cached,height=math.floor(screen:getHeight()*.30)}
+   summary={cover_path=info.cover_path,text=info.title or folder.name,description=info.description,stats=view.stats,cached=view.cached,
+    reading_date=view.reading_date,height=math.floor(screen:getHeight()*.30)}
   end
   local resume=visit.resume
   local resumeButton
   if view.header and resume and resume.entry then
    local target=resume.entry
-   local label=self:chapterLabel(target,info)
-   local history=(core.state.history or {})[target.id]
-   local opened=tonumber(history and history.time) or 0
-   local date
-   if opened>0 then
-    date=string.format(tr('Last opened: %s'),os.date('%d.%m %H:%M',opened))
-   elseif resume.remote_time and resume.remote_time>0 then
-    date=string.format(tr('Progress updated: %s'),os.date('%d.%m %H:%M',resume.remote_time))
-   end
-   if resume.summary and resume.summary.status=='complete'then label=label..' · '..tr('Read')end
-   resumeButton={text=tr(resume.resume and 'Continue'or 'Read chapter'),detail=label,date=date,
+   local detail=I18N.format(resume.resume and 'Continue from “%s”' or 'Read “%s”',self:chapterLabel(target,info))
+   resumeButton={text=tr(resume.resume and 'Continue'or 'Read chapter'),detail=detail,
     enabled=true,callback=action(function()
      visit.user_paged=true
      self:openEntry(target,resume.resume)
@@ -475,7 +486,7 @@ return function(Shelf,env)
    conflict=view.conflict and action(function()self:showMetadataConflict(folder)end)or nil,
    activity_callback=action(function()self:showQueue()end),
    back=action(back),close=function()close(self.folder_menu)end,info=action(function()self:showInfo(parent)end)}
-  local menu=self:menu(info.title or folder.name,self:folderRows(parent,self.folder_entries,offline),{
+  local menu=self:menu(info.title or folder.name,self:folderRows(parent,self.folder_entries,offline,view.resume_id),{
    icons=not grid,grid=grid,decorated=not grid,columns=view.columns,header=header,perpage=grid and view.columns*view.rows or 7,multiline=true,
    lazy=true,defer_lazy=true,parent_enabled=folder.parent_id~=nil,
    close=function()if not self.replacing_folder then core.catalog_visible=false end end})
@@ -861,7 +872,8 @@ return function(Shelf,env)
     {text=tr('Folder view')..': '..tr(s.folder_view or 'grid'),callback=function()s.folder_view=s.folder_view~='list'and 'list'or 'grid';self:saveSettings();reopen()end},
    }
    rows[#rows+1]={text=tr('Folder grid size')..' · '..(s.folder_grid or '3x2'),callback=function()self:showGridSizes('folder_grid','Folder grid size')end}
-   rows[#rows+1]={text=tr('Chapter grid size')..' · '..(s.file_grid or '3x2'),callback=function()self:showGridSizes('file_grid','Chapter grid size')end}
+   rows[#rows+1]={text=tr('Chapter grid size without header')..' · '..(s.file_grid or '3x2'),
+    callback=function()self:showGridSizes('file_grid','Chapter grid size without header')end}
    toggle('jump_to_resume','Go to the chapter page when opening a folder')
    toggle('known_first','Show known folders first');toggle('load_covers','Download folder covers');toggle('load_metadata','Download descriptive metadata');toggle('show_service','Show service files')
    toggle('hide_empty','Hide empty folders');toggle('info_header','Comic folder information header');toggle('local_covers','Create covers for downloaded documents')

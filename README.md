@@ -39,7 +39,7 @@ Open **Google Drive Shelf** directly from KOReader's right-hand menu tab in the 
 
 The folder toolbar separates navigation, refresh, sorting, display mode and actions. Folder and file sorting are independent and persist across restarts. Folder pins stay above other items; optionally, known folders follow them. Pinning a folder to the top does **not** download it.
 
-New installations use a **3×2 folder grid** and a **chapter list**. Switch chapters to tiles to use their independent grid preset. Existing display choices are retained.
+New installations use a **3×2 folder grid** and a **chapter list**. Chapter tiles use their own grid preset. An expanded comic header takes the space of one row, and collapsing it restores the full grid.
 
 | Folder list | Settings |
 | --- | --- |

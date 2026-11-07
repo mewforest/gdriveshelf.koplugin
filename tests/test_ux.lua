@@ -39,9 +39,29 @@ H.test('transfer progress updates status without rebuilding the folder body',fun
 end)
 H.test('stable comic header and file grid do not depend on remote beta features',function()
  local p=instance();p.settings.file_view='grid';p.core.state.folders.p={name='Comics',id='p',parent_id='home'}
- local view=p:browserPresentation('p',{{id='a',name='1.cbz',parent_id='p'}})
- assert(view.header and view.grid)
- p.settings.info_header=false;assert(not p:browserPresentation('p',{{id='a',name='1.cbz',parent_id='p'}}).header)
+ local entries={{id='a',name='1.cbz',parent_id='p',size=1000}}
+ local view=p:browserPresentation('p',entries)
+ assert(view.header and view.grid);H.eq(view.rows,1);H.eq(view.columns,3)
+ H.eq(view.stats,'In cloud: 1 file · 1 kB');H.eq(view.cached,'On device: 0 files · 0 B')
+ p.folder_visit={collapsed=true}
+ local collapsed=p:browserPresentation('p',entries)
+ assert(not collapsed.header);H.eq(collapsed.rows,2)
+ p.folder_visit=nil;p.settings.info_header=false
+ local hidden=p:browserPresentation('p',entries)
+ assert(not hidden.header);H.eq(hidden.rows,2)
+end)
+H.test('the comic header shows the reading date and the resume row omits the opened suffix',function()
+ local p=instance();p.settings.light_mode=true
+ local chapter={id='a',name='1.cbz',parent_id='p'}
+ p.core.state.summaries.a={status='reading'}
+ p.core.state.last_opened={p=1700000000}
+ p.folder_visit={resume={entry=chapter,resume=true}}
+ local view=p:browserPresentation('p',{chapter})
+ H.eq(view.reading_date,'Last opened: '..os.date('%d.%m %H:%M',1700000000))
+ H.eq(p:folderRows('p',{chapter},false,view.resume_id)[1].text,'1.cbz')
+ p.folder_visit.collapsed=true
+ view=p:browserPresentation('p',{chapter})
+ H.eq(p:folderRows('p',{chapter},false,view.resume_id)[1].text,'1.cbz')
 end)
 H.test('catalog settings expose explicit recursive consent and stable cover controls',function()
  local p=instance();local rows=p:showSettingsCategory('catalog').item_table;local text={}
