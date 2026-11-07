@@ -273,17 +273,18 @@ return function(Shelf,env)
    end
   end
   local conflict=self.core.metadataConflict and self.core:metadataConflict(folder)~=nil
+  local progress=header and info.progress and info.progress.ratio or nil
   local signature=table.concat({
    tostring(parent),tostring(folder.parent_id),info.title or folder.name,header and(info.cover_path or '')or '',
    header and(info.description or '')or '',header and(countText or '')or '',header and(downloadedText or '')or '',tostring(header),tostring(comic),
    tostring(grid),tostring(hasFolders),columns,rows,tostring(self:downloadActivity()~=nil),tostring(conflict),
    tostring(resume and resume.entry and self:chapterLabel(resume.entry,info)),
    tostring(resume and resume.entry and resume.entry.id),tostring(resume and resume.resume),
-   readingDate or '',
+   readingDate or '',tostring(progress),
    tostring(self.startup_loading),tostring(self.browser_loading and self.startup_loading)
   },'|')
   return {info=info,folder=folder,hasFolders=hasFolders,comic=comic,grid=grid,header=header,columns=columns,rows=rows,
-   stats=countText,cached=downloadedText,reading_date=readingDate,resume_id=resume_id,conflict=conflict,signature=signature}
+   stats=countText,cached=downloadedText,reading_date=readingDate,resume_id=resume_id,progress=progress,conflict=conflict,signature=signature}
  end
  function Shelf:revealResume()
   local visit,menu=self.folder_visit,self.folder_menu
@@ -464,7 +465,7 @@ return function(Shelf,env)
   local summary
   if view.header then
    summary={cover_path=info.cover_path,text=info.title or folder.name,description=info.description,stats=view.stats,cached=view.cached,
-    reading_date=view.reading_date,height=math.floor(screen:getHeight()*.30)}
+    reading_date=view.reading_date,progress=view.progress,progress_label=tr('Progress'),height=math.floor(screen:getHeight()*.30)}
   end
   local resume=visit.resume
   local resumeButton

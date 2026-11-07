@@ -128,10 +128,24 @@ function B.header(o)
    end
    details[#details+1]=widget
   end
+  addLine(o.summary.description,2*math.floor((1+Text.line_height)*smallFace.size+.5),o.info)
   addLine(o.summary.stats,Screen:scaleBySize(34))
   addLine(o.summary.cached,Screen:scaleBySize(34))
   addLine(o.summary.reading_date,Screen:scaleBySize(34))
-  addLine(o.summary.description,2*math.floor((1+Text.line_height)*smallFace.size+.5),o.info)
+  if o.summary.progress~=nil then
+   local progressLabel=TextLine:new{text=o.summary.progress_label,face=smallFace}
+   local percent=TextLine:new{text=string.format('%d%%',math.floor(o.summary.progress*100+.5)),face=smallFace}
+   local barWidth=textWidth-progressLabel:getSize().w-percent:getSize().w-2*gap
+   local progressRow=H:new{align='center',progressLabel,HS:new{width=gap}}
+   if barWidth>=Screen:scaleBySize(24) then
+    progressRow[#progressRow+1]=require('ui/widget/progresswidget'):new{
+     width=barWidth,height=Screen:scaleBySize(6),percentage=o.summary.progress,bordersize=1,radius=0,margin_h=0,margin_v=0}
+    progressRow[#progressRow+1]=HS:new{width=gap}
+   end
+   progressRow[#progressRow+1]=percent
+   details[#details+1]=VS:new{width=math.floor(gap/2)}
+   details[#details+1]=progressRow
+  end
   details:resetLayout()
   row[#row+1]=details
   header[#header+1]=inset(row);header[#header+1]=VS:new{width=gap}

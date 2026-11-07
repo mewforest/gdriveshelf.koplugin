@@ -55,12 +55,15 @@ H.test('the comic header shows the reading date and the resume row omits the ope
  local chapter={id='a',name='1.cbz',parent_id='p'}
  p.core.state.summaries.a={status='reading'}
  p.core.state.last_opened={p=1700000000}
+ p.core.titleInfo=function()return {progress={ratio=.25}}end
  p.folder_visit={resume={entry=chapter,resume=true}}
  local view=p:browserPresentation('p',{chapter})
  H.eq(view.reading_date,'Last opened: '..os.date('%d.%m %H:%M',1700000000))
+ H.eq(view.progress,.25)
  H.eq(p:folderRows('p',{chapter},false,view.resume_id)[1].text,'1.cbz')
  p.folder_visit.collapsed=true
  view=p:browserPresentation('p',{chapter})
+ H.eq(view.progress,nil)
  H.eq(p:folderRows('p',{chapter},false,view.resume_id)[1].text,'1.cbz')
 end)
 H.test('offline chapters use the full cloud listing for totals when available',function()

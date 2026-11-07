@@ -122,6 +122,7 @@ local ru={
  ["Previously opened"]="Открывалась ранее",
  ["Last opened: %s"]="Последнее открытие: %s",
  ["Progress updated: %s"]="Прогресс обновлён: %s",
+ ["Progress"]="Прогресс",
  ["Checking folders…"]="Проверка папок…",
  ["%d folders checked"]="Проверено папок: %d",
  ["Checked %s"]="Проверено %s",
