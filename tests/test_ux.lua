@@ -63,6 +63,17 @@ H.test('the comic header shows the reading date and the resume row omits the ope
  view=p:browserPresentation('p',{chapter})
  H.eq(p:folderRows('p',{chapter},false,view.resume_id)[1].text,'1.cbz')
 end)
+H.test('offline chapters use the full cloud listing for totals when available',function()
+ local p=instance();p.folder_offline=true
+ local chapter={id='a',name='1.cbz',parent_id='p',size=1000}
+ p.core.cached=function(_,id)if id=='a'then return chapter end end
+ local view=p:browserPresentation('p',{chapter})
+ H.eq(view.stats,nil);H.eq(view.cached,'On device: 1 file · 1 kB')
+ p.core.state.listings.p={complete=true}
+ p.core.cachedList=function()return {chapter,{id='b',name='2.cbz',parent_id='p',size=2000}}end
+ view=p:browserPresentation('p',{chapter})
+ H.eq(view.stats,'In cloud: 2 files · 3 kB');H.eq(view.cached,'On device: 1 file · 1 kB')
+end)
 H.test('catalog settings expose explicit recursive consent and stable cover controls',function()
  local p=instance();local rows=p:showSettingsCategory('catalog').item_table;local text={}
  for _,row in ipairs(rows)do text[#text+1]=row.text end

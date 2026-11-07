@@ -247,9 +247,17 @@ return function(Shelf,env)
   local header=self.settings.info_header~=false and comic and not visit.collapsed
   if header and grid and not hasFolders then rows=math.max(1,rows-1)end
   local countText,downloadedText
-  if count>0 then
-   local cloud=I18N.fileCount(count)..(total and ' · '..env.bytes(total) or '')
+  local cloudCount,cloudBytes=count,total
+  if header and self.folder_offline then
+   -- The offline view lists only downloaded files. Use the saved full listing for cloud totals.
+   local stats=Catalog.stats(self.core,parent,{})
+   cloudCount,cloudBytes=stats.count,stats.total_bytes
+  end
+  if cloudCount and (cloudCount>0 or downloaded>0) then
+   local cloud=I18N.fileCount(cloudCount)..(cloudBytes and ' · '..env.bytes(cloudBytes) or '')
    countText=I18N.format('In cloud: %s',cloud)
+  end
+  if count>0 then
    downloadedText=I18N.format('On device: %s',I18N.fileCount(downloaded)..' · '..env.bytes(downloadedBytes))
   end
   local resume=visit.resume
