@@ -33,3 +33,13 @@ H.test('index status omits 0/0 before discovery and identifies completed counts'
  text=p:indexScreenText()
  assert(text:find('12 checked',1,true) and text:find('20 found',1,true) and text:find('1 min 15 s',1,true))
 end)
+H.test('transfer shows elapsed time and ETA only while the total and rate are usable',function()
+ local p=instance();local e={id='test',name='Test.cbz',size=100}
+ p.core.transfer.test={received=50,started=20,sampled=26,samples=3,stage='download'}
+ local stage,text,fraction=p:downloadSummary(e)
+ H.eq(stage,'Downloading');H.eq(fraction,.5)
+ assert(text:find('6 s elapsed',1,true)and text:find('about 6 s left',1,true))
+ p.core.networkState=function()return 'sleep'end
+ stage,text=p:downloadSummary(e)
+ assert(not text:find('left',1,true));H.eq(stage,'Waiting for the device to wake')
+end)

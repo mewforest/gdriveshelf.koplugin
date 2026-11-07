@@ -201,7 +201,8 @@ end
 
 function Provider:_request(r, limit, consumer, reset)
     local c=self.credentials
-    if not valid(c.access_token) or (tonumber(c.expires_at) and c.expires_at<=os.time()+30) then
+    local expiry=tonumber(c.expires_at)
+    if not valid(c.access_token) or (expiry and expiry<=os.time()+30) then
         local ok,e=self:_refresh(); if not ok then return nil,e end
     end
     r.headers=r.headers or {}; r.headers.Authorization='Bearer '..c.access_token
@@ -213,6 +214,19 @@ function Provider:_request(r, limit, consumer, reset)
         result,e=self:_send(r,limit or JSON_LIMIT,consumer)
     end
     return result,e
+end
+
+function Provider:accountProfile()
+    local result,e=self:_request({url='https://www.googleapis.com/drive/v3/about?fields=user%28permissionId%2CemailAddress%2CdisplayName%29',
+        method='GET',operation='stat'},8192)
+    if not result then return nil,e end
+    local data;data,e=self:_decode(result.body)
+    if not data then return nil,e end
+    local user=data.user
+    if type(user)~='table'or type(user.permissionId)~='string'then
+        return nil,err('invalid_response','Account could not be verified')
+    end
+    return {permissionId=user.permissionId,emailAddress=user.emailAddress,displayName=user.displayName}
 end
 
 function Provider:list(parent_id)
@@ -327,18 +341,9 @@ function Provider:stat(id)
     return entry
 end
 
-function Provider:read(entry,max_bytes)
-    if type(entry)~='table' or not valid(entry.id) or not byte_limit(max_bytes) then return nil,err('invalid_argument','A file and a byte limit are required') end
-    if entry.size and entry.size>max_bytes then return nil,err('too_large','File exceeds the size limit') end
-    local result,e=self:_request({url=API..'/'..escape(entry.id)..'?alt=media&supportsAllDrives=true',method='GET'},max_bytes)
-    if not result then return nil,e end
-    if entry.size and result.size~=entry.size then return nil,err('size_mismatch','Downloaded size differs from metadata') end
-    return result.body
-end
-
 -- Streaming MD5 uses LuaJIT's built-in bit library, with at most one file chunk
 -- resident at a time. No shell invocation or external checksum executable.
-local function file_md5(path)
+local function md5(readChunk)
     local bit=require('bit'); local band,bor,bxor,bnot,rol=bit.band,bit.bor,bit.bxor,bit.bnot,bit.rol
     local shifts={7,12,17,22,5,9,14,20,4,11,16,23,6,10,15,21}
     local constants={}; for i=1,64 do constants[i]=bit.tobit(math.floor(math.abs(math.sin(i))*4294967296)) end
@@ -358,20 +363,45 @@ local function file_md5(path)
         end
         a,b,c,d=bit.tobit(a+aa),bit.tobit(b+bb),bit.tobit(c+cc),bit.tobit(d+dd)
     end
-    local f=io.open(path,'rb'); if not f then return nil end
     local pending,total='',0
     while true do
-        local chunk=f:read(65536); if not chunk then break end
+        local chunk=readChunk(); if not chunk then break end
         total=total+#chunk; pending=pending..chunk
         local upto=#pending-#pending%64
         for offset=1,upto,64 do block(pending:sub(offset,offset+63)) end
         pending=pending:sub(upto+1)
     end
-    f:close()
     local function le(n) return string.char(band(n,255),band(bit.rshift(n,8),255),band(bit.rshift(n,16),255),band(bit.rshift(n,24),255)) end
     pending=pending..'\128'..string.rep('\0',(55-#pending)%64)..le((total*8)%4294967296)..le(math.floor(total/536870912))
     for offset=1,#pending,64 do block(pending:sub(offset,offset+63)) end
     return ((le(a)..le(b)..le(c)..le(d)):gsub('.',function(x) return string.format('%02x',x:byte()) end))
+end
+
+local function file_md5(path)
+    local f=io.open(path,'rb'); if not f then return nil end
+    local result=md5(function()return f:read(65536)end)
+    f:close()
+    return result
+end
+
+function Provider:read(entry,max_bytes)
+    if type(entry)~='table' or not valid(entry.id) or not byte_limit(max_bytes) then return nil,err('invalid_argument','A file and a byte limit are required') end
+    if entry.size and entry.size>max_bytes then return nil,err('too_large','File exceeds the size limit') end
+    local result,e=self:_request({url=API..'/'..escape(entry.id)..'?alt=media&supportsAllDrives=true',method='GET'},max_bytes)
+    if not result then return nil,e end
+    if entry.size and result.size~=entry.size then return nil,err('size_mismatch','Downloaded size differs from metadata') end
+    local checksum=entry.checksum
+    if type(checksum)=='string' and #checksum==32 and checksum:match('^%x+$') then
+        local offset=1
+        local actual=md5(function()
+            if offset>#result.body then return nil end
+            local chunk=result.body:sub(offset,offset+65535)
+            offset=offset+#chunk
+            return chunk
+        end)
+        if actual~=checksum:lower() then return nil,err('checksum_mismatch','Downloaded content differs from metadata')end
+    end
+    return result.body
 end
 
 -- Strict partial media reads. Validation happens before the streaming body.

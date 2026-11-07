@@ -164,3 +164,25 @@ H.test('folder metadata imports use a declared image before a standard WebP cove
  core:metadata(entries,true)
  H.eq(selected,'standard')
 end)
+
+H.test('normal visits reuse a fresh folder listing unless explicitly invalidated',function()
+ local calls=0
+ local core,_,drain=Fixture.new({home='home'},{
+  list=function()calls=calls+1;return {}end,
+ })
+ core:rememberList('warm',{})
+ assert(not core:folder('warm','Warm',function(rows,cached)assert(cached and #rows==0)end))
+ core.state.listings.warm.dirty=true
+ assert(core:folder('warm','Warm',function()end));drain()
+ H.eq(calls,1);assert(not core.state.listings.warm.dirty)
+end)
+
+H.test('light prefetch uses its own threshold and queues only selected chapters',function()
+ local core,_,_,jobs=Fixture.new({home='home',light_mode=true,light_prefetch=1,light_threshold=95},{})
+ local a={id='a',parent_id='home',name='1.cbz',size=100,version='1'}
+ local b={id='b',parent_id='home',name='2.cbz',size=100,version='1'}
+ core:rememberList('home',{a,b})
+ core:prefetch(a,.94);H.eq(#jobs,0)
+ core:prefetch(a,.95);H.eq(#jobs,1)
+ H.eq(jobs[1].key,'download:b')
+end)

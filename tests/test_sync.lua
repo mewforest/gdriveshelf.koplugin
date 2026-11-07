@@ -160,4 +160,35 @@ test('a later reader snapshot retains the status edit and its strict source guar
  assert(latest.chapter_status=='complete' and not latest.status_only)
  assert(sdr.decode(latest.lua).last_page==9 and latest.seq==mark.seq)
 end)
+test('automatic comparison ignores only location fields and service timestamp', function()
+ local local_data={last_page=8,doc_pages=10,percent_finished=.8,summary={status='reading',modified='2026-11-07'}}
+ local remote_data={last_page=5,doc_pages=10,percent_finished=.5,summary={status='reading',modified='2026-11-06'}}
+ assert(sdr.automaticChoice(book,local_data,remote_data,'farthest')=='local')
+ assert(sdr.automaticChoice(book,remote_data,local_data,'farthest')=='remote')
+ assert(not sdr.automaticChoice({name='Book.epub'},local_data,remote_data,'farthest'))
+ remote_data.annotations={{text='bookmark'}}
+ assert(not sdr.automaticChoice(book,local_data,remote_data,'farthest'))
+ local description=sdr.describeConflict{local_lua=assert(sdr.encode(local_data)),remote_lua=assert(sdr.encode(remote_data))}
+ assert(description.local_version.page==8 and description.remote_version.percent==.5)
+ assert(table.concat(description.differences,','):find('annotations',1,true))
+end)
+test('freshest choice needs precise distinct trustworthy times and reading-only changes', function()
+ local l,r={last_page=8},{last_page=5}
+ assert(sdr.automaticChoice(book,l,r,'freshest',1794040565,'2026-11-07T12:00:00.000Z',1794055800)=='remote')
+ assert(not sdr.automaticChoice(book,l,r,'freshest',1794040565,'2026-11-07',1794055800))
+ assert(not sdr.automaticChoice(book,l,r,'freshest',1794040565,'2026-11-08T12:00:00Z',1794055800))
+ r.summary={status='complete'};assert(not sdr.automaticChoice(book,l,r,'farthest'))
+end)
+test('same-size metadata races fail closed before restoration', function()
+ local p,storage=fixture();remote(p,2)
+ local read=p.read
+ function p:read(entry)
+  local bytes=read(self,entry)
+  self.children.folder[1]={id='meta',name='metadata.cbz.lua',parent_id='folder',etag='e2',checksum='m2'}
+  return bytes
+ end
+ local sync=Sync.new{provider=p,storage=storage,state={}}
+ local result,e=sync:pull(book);assert(not result and e.code=='metadata_changed')
+end)
+
 print('Sync: '..n..' tests passed')

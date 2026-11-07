@@ -161,7 +161,7 @@ return function(Core)
      local entry=item.entry;local current=self.state.docs[entry.id]or entry
      if eligible[entry.id]and sameBook(current,entry)then
       local previous=self.state.summaries[entry.id]
-      local record={sidecar_id=item.sidecar and item.sidecar.id,metadata_id=item.metadata and item.metadata.id,signature=item.signature,book_signature=fingerprint(entry),failed=item.failed,missing=item.missing,checked_at=os.time(),summary=item.summary}
+      local record={sidecar_id=item.sidecar and item.sidecar.id,metadata_id=item.metadata and item.metadata.id,signature=item.signature,book_signature=fingerprint(entry),failed=item.failed,missing=item.missing,checked_at=os.time(),summary=item.summary,modified_time=item.metadata and item.metadata.modified_time}
       self.state.progress_cache[entry.id]=record
       if item.lua then self:storeRemote(entry,item,true) end
       if item.summary then
@@ -302,7 +302,9 @@ return function(Core)
   state.chapter_marks=state.chapter_marks or {}
   local oldPending,oldMark,oldSummary=state.pending[id],state.chapter_marks[id],self.state.summaries[id]
   local oldConflict=state.conflicts[id]
-  local oldConflictLua=oldConflict and oldConflict.local_lua
+  local oldResolution=state.resolutions and state.resolutions[id]
+  local oldDeferred=state.deferred and state.deferred[id]
+  local oldRevision,oldSeq=state.revision,state.next_pending_seq
   local summary=copy(self:chapterSummary(entry))
   local pending,err=self:sync():markChapter(entry,read)
   if not pending then return nil,err end
@@ -310,12 +312,15 @@ return function(Core)
   summary.book_signature=fingerprint(entry)
   self.state.summaries[id]=summary
   state.chapter_marks[id]={entry=copy(entry),status=pending.chapter_status,date=pending.chapter_status_date}
+  local conflict=self:invalidateProgressChoice(entry,pending)
   local ok,why=self:save()
   if not ok then
    state.pending[id],state.chapter_marks[id],self.state.summaries[id]=oldPending,oldMark,oldSummary
-   if oldConflict then oldConflict.local_lua=oldConflictLua end
+   state.conflicts[id],state.resolutions[id],state.deferred[id]=oldConflict,oldResolution,oldDeferred
+   state.revision,state.next_pending_seq=oldRevision,oldSeq
    return nil,{code='disk',message=why or 'Could not save the chapter status'}
   end
+  if conflict then self:emit('conflict',entry)end
   self:emit('progress',entry)
   if self.settings.sync_enabled then self:flushPending() end
   return pending
@@ -360,7 +365,7 @@ return function(Core)
   if self.state.progress_cache then self.state.progress_cache[entry.id]=nil end
  end
 
- function Core:resumeChapter(parent,entries,callback)
+ function Core:resumeChapter(parent,entries,callback,cached_only)
   local books={}
   for _,entry in ipairs(entries or {})do
    if entry.parent_id==parent and Library.supported(entry) then books[#books+1]=entry end
@@ -383,22 +388,42 @@ return function(Core)
   end
   local index=recent or lastSidecar or lastLocal
   if not index then return {entry=books[1],waiting=false,resume=false,completed=false} end
-  local candidate=books[index]
-  local function resolved()
+  local localIndex=index
+  local function resolved(selected)
+   selected=selected or localIndex
+   local candidate=books[selected]
    local summary=self:chapterSummary(candidate)
    local complete=summary and summary.status=='complete' or false
-   if complete and books[index+1] and not opened[index+1] then
-    return {entry=books[index+1],waiting=false,resume=false,completed=false}
+   if complete and books[selected+1] and not opened[selected+1] then
+    return {entry=books[selected+1],waiting=false,resume=false,completed=false}
    end
-   return {entry=candidate,summary=summary,waiting=false,resume=true,completed=complete}
+   local record=currentRecord(self,candidate)
+   local remoteTime=record and record.modified_time and SDR.utcTime(record.modified_time)
+   return {entry=candidate,summary=summary,waiting=false,resume=true,completed=complete,remote_time=remoteTime}
   end
-  if sidecars[candidate.id] and self.settings.sync_enabled and self:online() then
+  local function protected(i)
+   local entry=books[i]
+   return self.state.sync.pending[entry.id] or pendingMark(self,entry)
+  end
+  local function choose()
+   if not recent or not lastSidecar or lastSidecar==recent or protected(recent)then return resolved()end
+   local other=books[lastSidecar]
+   local record=currentRecord(self,other)
+   local date=record and record.modified_time
+   local timestamp=date and SDR.utcTime and SDR.utcTime(date)
+   if timestamp and timestamp>recentAt and timestamp<=os.time()+300 and record.summary then return resolved(lastSidecar)end
+   return resolved()
+  end
+  local candidate=books[index]
+  if cached_only then return choose()end
+  if self.settings.sync_enabled and self:online() then
+   if recent and lastSidecar and lastSidecar~=recent and not protected(recent)then index=lastSidecar;candidate=books[index]end
+   if not sidecars[candidate.id]then return choose()end
    local summary=self:chapterSummary(candidate)
    local pending=self.state.sync.pending[candidate.id]
    local record=currentRecord(self,candidate)
    local fresh=record and os.time()-(record.checked_at or 0)<FRESH_SECONDS
-   local hasLocal=(pending and not pending.status_only) or pendingMark(self,candidate)
-     or (index==recent and summary and self:cached(candidate.id))
+   local hasLocal=pending or pendingMark(self,candidate)
    local advances=summary and summary.status=='complete' and books[index+1] and not opened[index+1]
    local ready=fresh and (record.missing or record.failed or advances)
    if fresh and not ready and not hasLocal then
@@ -407,11 +432,11 @@ return function(Core)
    end
    if not hasLocal and not ready then
     local queued=runProgress(self,{copy(candidate)},'resume',function(err)
-     if callback then callback(resolved(),err) end
+     if callback then callback(choose(),err) end
     end)
-    if queued then return {entry=candidate,summary=summary,waiting=true,resume=true,completed=false} end
+    if queued then local known=choose();known.waiting=true;return known end
    end
   end
-  return resolved()
+  return choose()
  end
 end

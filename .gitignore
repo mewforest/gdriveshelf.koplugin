@@ -1,9 +1,11 @@
 .DS_Store
 .superpowers/
+.codex-attachments/
 build/
 *.pyc
 __pycache__/
 credentials*.json
+gdriveshelf-credentials.json
 *refresh_token*
 *.part
 docs/superpowers/

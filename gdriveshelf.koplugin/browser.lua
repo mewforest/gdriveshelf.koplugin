@@ -33,6 +33,17 @@ function B.header(o)
  if o.conflict then header_actions[#header_actions+1]={icon='notice-warning',callback=o.conflict}end
  if o.collapse then header_actions[#header_actions+1]={icon='chevron.up',rotation=o.collapsed and 180 or 0,callback=o.collapse}end
  if #o.buttons>0 then header[#header+1]=inset(buttons);header[#header+1]=VS:new{width=gap}end
+ if o.brand then
+  header[#header+1]=inset(require('ui/widget/container/centercontainer'):new{
+   dimen=require('ui/geometry'):new{w=o.width-2*pad,h=Screen:scaleBySize(72)},
+   require('ui/widget/iconwidget'):new{file=o.brand,width=Screen:scaleBySize(64),height=Screen:scaleBySize(64),is_icon=false,scale_factor=0}})
+ end
+ local hint
+ if o.hint then
+  hint=Button:new{text=o.hint,width=o.width-2*pad,height=Screen:scaleBySize(40),
+   text_font_face='smallinfofont',text_font_bold=false,avoid_text_truncation=false,callback=o.hint_callback}
+  header[#header+1]=inset(hint);header[#header+1]=VS:new{width=gap}
+ end
  local activity
  if o.activity then
   activity=require('ui/widget/button'):new{text=o.activity,width=o.width-2*pad,height=Screen:scaleBySize(32),
@@ -40,12 +51,17 @@ function B.header(o)
    bordersize=0,padding_h=Screen:scaleBySize(4),padding_v=0,callback=o.activity_callback}
   header[#header+1]=inset(activity);header[#header+1]=VS:new{width=gap}
  end
+ local bars={}
  for _,bar in ipairs(o.bars or {})do
-  local block=V:new{align='left',require('ui/widget/textboxwidget'):new{text=bar.label,width=o.width-2*pad,face=require('ui/font'):getFace('smallinfofont')}}
+  local label=Text:new{text=bar.label,width=o.width-2*pad,face=Font:getFace('smallinfofont')}
+  local block=V:new{align='left',label}
+  local progress
   if bar.value then
    block[#block+1]=VS:new{width=Screen:scaleBySize(4)}
-   block[#block+1]=require('ui/widget/progresswidget'):new{width=o.width-2*pad,height=Screen:scaleBySize(6),percentage=bar.value,radius=0,bordersize=1,margin_h=1,margin_v=1}
+   progress=require('ui/widget/progresswidget'):new{width=o.width-2*pad,height=Screen:scaleBySize(6),percentage=bar.value,radius=0,bordersize=1,margin_h=1,margin_v=1}
+   block[#block+1]=progress
   end
+  bars[#bars+1]={label=label,progress=progress,block=block}
   header[#header+1]=inset(block);header[#header+1]=VS:new{width=gap}
  end
  local compact_width=o.width-2*pad
@@ -55,9 +71,19 @@ function B.header(o)
   header_focus[#header_focus+1]=button
   return button
  end
+ local resume
+ local resumeHeight=Screen:scaleBySize(34)
+ local function resumeRow(width)
+  local labelWidth=math.min(math.floor(width*.56),Screen:scaleBySize(180))
+  resume=Button:new{text='▶ '..o.resume.text,enabled=o.resume.enabled,width=labelWidth,height=resumeHeight,
+   text_font_face='cfont',text_font_size=16,avoid_text_truncation=false,padding_h=gap,padding_v=0,callback=o.resume.callback}
+  local detail=require('ui/widget/textwidget'):new{text=o.resume.detail or '',face=Font:getFace('smallinfofont'),
+   max_width=width-labelWidth-gap}
+  return H:new{align='center',resume,HS:new{width=gap},detail}
+ end
  if o.summary then
   local row=H:new{align='top'}
-  local coverHeight=math.min(o.summary.height,Screen:scaleBySize(144))
+  local coverHeight=math.min(o.summary.height,Screen:scaleBySize(216))
   local coverWidth=math.floor(coverHeight*.72)
   local textWidth=compact_width
   if o.summary.cover_path then
@@ -72,15 +98,26 @@ function B.header(o)
   local labelRow=H:new{align='top',label}
   if #header_actions>0 then labelRow[#labelRow+1]=HS:new{width=gap};labelRow[#labelRow+1]=actions end
   local details=V:new{align='left',labelRow}
-  local function addLine(value,height)
+  local function addLine(value,height,callback)
    if not value or value=='' or height<Screen:scaleBySize(16)then return end
    local widget=Text:new{text=value,width=textWidth,face=Font:getFace('smallinfofont'),height=height,
     height_adjust=true,height_overflow_show_ellipsis=true}
    details[#details+1]=VS:new{width=math.floor(gap/2)}
+   if callback then
+    local size=widget:getSize()
+    local area=require('ui/geometry'):new{w=size.w,h=size.h}
+    local tap=require('ui/widget/container/inputcontainer'):new{dimen=area,widget}
+    tap.ges_events={ShelfDescription={require('ui/gesturerange'):new{ges='tap',range=area}}}
+    tap.onShelfDescription=function()callback();return true end
+    widget=tap
+   end
    details[#details+1]=widget
   end
-  addLine(o.summary.stats,Screen:scaleBySize(24))
-  addLine(o.summary.description,coverHeight-details:getSize().h-gap)
+  local inline=o.resume and textWidth>=Screen:scaleBySize(245)
+  addLine(o.summary.stats,Screen:scaleBySize(34))
+  addLine(o.summary.cached,Screen:scaleBySize(34))
+  addLine(o.summary.description,coverHeight-details:getSize().h-gap-(inline and resumeHeight or 0),o.info)
+  if inline then details[#details+1]=VS:new{width=math.floor(gap/2)};details[#details+1]=resumeRow(textWidth)end
   details:resetLayout()
   row[#row+1]=details
   header[#header+1]=inset(row);header[#header+1]=VS:new{width=gap}
@@ -89,23 +126,62 @@ function B.header(o)
   for _,spec in ipairs(header_actions)do row[#row+1]=smallButton(spec)end
   header[#header+1]=inset(row)
  end
- local resume
- if o.resume then
-  resume=Button:new{text=o.resume.text,enabled=o.resume.enabled,width=compact_width,height=Screen:scaleBySize(36),
-   text_font_face='cfont',text_font_size=16,align='left',avoid_text_truncation=false,padding_h=gap,padding_v=0,
-   callback=o.resume.callback}
-  header[#header+1]=inset(resume);header[#header+1]=VS:new{width=gap}
+ if o.resume and not resume then
+  header[#header+1]=inset(resumeRow(compact_width));header[#header+1]=VS:new{width=gap}
  end
  header.bindMenu=function(_,menu)title.show_parent=menu end
  header.getHeight=function(h)return h:getSize().h end
  header.setTitle=function(_,text,refresh)title:setTitle(text,refresh)end
  header.setSubTitle=function(_,text,refresh)title:setSubTitle(text,refresh)end
+ header.setBars=function(h,values)
+  for i,bar in ipairs(values)do
+   local widgets=bars[i]
+   if widgets then
+    widgets.label:setText(bar.label)
+    if widgets.progress and bar.value then widgets.progress:setPercentage(bar.value)end
+    widgets.block:resetLayout()
+   end
+  end
+  h:resetLayout()
+ end
  header.setActivity=function(_,text)
   if not activity or text==activity.text then return end
   activity:setText(text,activity.width);activity:refresh()
  end
- header.generateVerticalLayout=function()local layout=title:generateVerticalLayout();for _,row in ipairs(buttons.layout or {})do layout[#layout+1]=row end;if activity then layout[#layout+1]={activity}end;if #header_focus>0 then layout[#layout+1]=header_focus end;if resume then layout[#layout+1]={resume}end;return layout end
+ header.generateVerticalLayout=function()local layout=title:generateVerticalLayout();for _,row in ipairs(buttons.layout or {})do layout[#layout+1]=row end;if activity then layout[#layout+1]={activity}end;if hint then layout[#layout+1]={hint}end;if #header_focus>0 then layout[#layout+1]=header_focus end;if resume then layout[#layout+1]={resume}end;return layout end
  return header
+end
+-- Keep native focus, gestures and underline. Only substitute the text block
+-- when the runtime has the supported MenuItem layout.
+function B.decorateList(menu)
+ local V=require('ui/widget/verticalgroup')
+ local Text=require('ui/widget/textwidget')
+ local Screen=require('device').screen
+ for _,item in ipairs(menu.item_group or {})do
+  local entry=item.entry
+  if entry and entry.list_title then
+   local underline=item._underline_container
+   local group=underline and underline[1] and underline[1][1]
+   local text=group and group[2]
+   if text and text[1] and item.content_width and item.face then
+    local old=text[1]
+    local width=item.content_width
+    local body=V:new{align='left',Text:new{text=entry.list_title,face=item.face,bold=true,max_width=width}}
+    if entry.list_detail then
+     body[#body+1]=Text:new{text=entry.list_detail,face=item.info_face,max_width=width}
+    end
+    if entry.list_progress then
+     body[#body+1]=require('ui/widget/verticalspan'):new{width=Screen:scaleBySize(3)}
+     body[#body+1]=require('ui/widget/progresswidget'):new{width=width,height=Screen:scaleBySize(4),
+      percentage=entry.list_progress,bordersize=1,radius=0}
+    end
+    if body:getSize().h<=item.dimen.h then
+     old:free()
+     text[1]=body
+    else body:free()end
+   end
+  end
+ end
 end
 function B.gridClass(Menu)
  local Input=require('ui/widget/container/inputcontainer')

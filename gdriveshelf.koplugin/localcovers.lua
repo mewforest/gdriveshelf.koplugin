@@ -251,7 +251,7 @@ local function queue(core,entry,cached,callback,force,remote)
    else result=nil;err=failure('space','Cannot store cover in the metadata cache')end
   end
   core.storage:remove(incoming);core.local_cover_protected[entry.id]=nil;core.local_cover_automatic[entry.id]=nil
-  if result or(err and(err.code=='preview'or err.code=='range'or err.code=='timeout'))then
+  if result or(err and(err.code=='preview'or err.code=='preview_limit'or err.code=='preview_format'or err.code=='range'or err.code=='timeout'))then
    core.state.local_cover_attempts[entry.id]={fingerprint=stamp,skipped=not result};core:save()
   end
   if not err or err.code~='cancelled'then core:emit('thumbnail',entry,err)end
@@ -284,6 +284,7 @@ function L.attach(Core)
   local result=protected(self)
   for id in pairs(self.local_cover_protected or{})do result[id]=true end
   if self.cover_gallery_session then result[self.cover_gallery_session.entry.id]=true end
+  if self.quick_preview_session and self.quick_preview_session.path then result[self.quick_preview_session.entry.id]=true end
   return result
  end
  function Core:coverGallerySupported(entry)
@@ -366,19 +367,31 @@ function L.attach(Core)
   return info
  end
  function Core:extractFolderCover(folder,callback)
-  local entries=require('gdriveshelf/library').ordered(self:cachedList(folder.id),'natural')
+  local Library=require('gdriveshelf/library')
+  local entries=Library.ordered(self:cachedList(folder.id),'natural')
+  local function refuse(code,message)
+   local err=failure(code,message)
+   if callback then callback(nil,err)end
+   return false,err
+  end
   for _,entry in ipairs(entries)do
-   if require('gdriveshelf/library').supported(entry)then
+   if Library.supported(entry)then
     local thumb=self:localCover(entry)
     if thumb then if callback then callback(thumb.path)end;return true end
     local cached=self:cached(entry.id)
-    if supported[extension(entry)]and localStamp(self,entry,cached)then return queue(self,entry,cached,callback,true)end
-    if extension(entry)=='cbz'and self:online()then return queue(self,entry,nil,callback,true,true)end
-    break
+    local format=extension(entry)
+    if supported[format]and localStamp(self,entry,cached)then return queue(self,entry,cached,callback,true)end
+    if format=='cbr'then return refuse('download_cbr','Download the CBR volume before choosing a cover.')end
+    if format=='cbz'then
+     if self:online()then return queue(self,entry,nil,callback,true,true)end
+     return refuse('offline','Connect to extract the CBZ cover or download the volume first.')
+    end
+    if supported[format]then return refuse('missing','Download this document before choosing a page')end
+    return refuse('preview_format','This archive format does not support cover extraction')
    end
   end
-  local err=failure('preview','Download the first supported chapter or go online for bounded CBZ cover extraction.')
-  if callback then callback(nil,err)end;return false,err
+  return refuse('missing','There are no documents to use as a cover.')
+
  end
 end
 return L

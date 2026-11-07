@@ -35,6 +35,10 @@ Open **Google Drive Shelf** directly from KOReader's right-hand menu tab in the 
 
 The folder toolbar separates navigation, refresh, sorting, display mode and actions. Folder and file sorting are independent and persist across restarts. Folder pins stay above other items; optionally, known folders follow them. Pinning a folder to the top does **not** download it.
 
+<p align="center">A six-card Google Drive Shelf library in three columns and two rows</p>
+
+New installations use a **3×2 folder grid** and a **chapter list**. Switch chapters to tiles to use their independent grid preset. Existing display choices are retained.
+
 | Folder library | Folder tiles |
 | --- | --- |
 | Folders with cached information | Folder cards with covers or centered names |
@@ -55,7 +59,7 @@ Plugin history groups comics by folder and keeps ordinary books as individual en
 
 ## Downloads and offline reading
 
-Opening an uncached document shows a download dialog with its name, transferred bytes and verification stage. **Cancel** stops the request. **In background** moves it to the catalog activity row without opening the document later. The same feedback appears when the next chapter is still downloading at the end of a document. A compact activity row in the catalog opens **Downloads and sync**, where background jobs remain visible. Prefetch supports 0–3 following files; downloads run sequentially.
+Opening an uncached document shows a download dialog with its name, transferred bytes and verification stage. **Cancel** stops the request. **In background without opening** moves it to the catalog activity row. When the file is ready, tap **Open** in the notification or queue. Transfer details include elapsed time and an estimate when enough bytes have arrived. The same feedback appears when the next chapter is still downloading at the end of a document. A compact activity row in the catalog opens **Downloads and sync**, where background jobs remain visible. Prefetch supports 0–3 following files; downloads run sequentially.
 
 Before travelling, save the folders you need and enable **Offline mode**. Cached files open without a server request. Going online resumes pending progress uploads. KOReader must remain running for background work.
 
@@ -65,19 +69,19 @@ Before travelling, save the folders you need and enable **Offline mode**. Cached
 | Offline downloads | No separate limit | Manual |
 | Covers, listings and previews | 256 MiB | Automatic LRU |
 
-The plugin keeps a **512 MiB free-space reserve** and protects active documents. Allow enough temporary-cache space for the open and next archives together. Evicting archives preserves reading metadata, snapshots and pending sync.
+The plugin keeps a **512 MiB free-space reserve** and protects active documents. Allow enough temporary-cache space for the open and next archives together. Use **Choose downloads to remove** to find large titles and remove selected offline or temporary archives. Evicting archives preserves reading metadata, snapshots and pending sync.
 
 Documents use readable paths such as **`Books/Series name/01.cbz`**. Duplicate or unsafe names receive a short identifier when needed. Offline pinning keeps the same path. Choose another document folder under **Downloads and storage**; moving files is cancellable and journalled. Original sidecars remain as recovery copies. Versions through 0.1.4 used a different archive layout: those archive paths are not migrated or reused; redownload documents as needed. Saved snapshots and pending sync are retained.
 
 ## Light mode
 
-Switch on **Light mode** from KOReader's right-hand menu tab or the plugin settings. It pauses automatic index checks, previews, prefetch and detailed page-by-page progress lookups. Opening a folder uses its saved listing for up to 15 minutes. Use **Refresh** for a fresh listing and to send queued reading progress, or return to the catalog after reading to send it. The subtitle shows when the folder was last checked. Manual downloads, previews and indexing remain available.
+Switch on **Light mode** in the plugin settings. It pauses automatic index checks, previews and detailed page-by-page progress lookups. Prefetch is off by default in this mode. Set a separate chapter count and threshold under **Reading and sync**. Opening a folder uses its saved listing for up to 15 minutes. Use **Refresh** for a fresh listing and to send queued reading progress, or return to the catalog after reading to send it. The subtitle shows when the folder was last checked. Manual downloads, previews and indexing remain available.
 
 ## Covers, metadata and indexing
 
 Adjacent `cover.jpg`, `cover.png` or `cover.webp`, Kotatsu Redo `index.json` and Mylar/Komga `series.json` can supply covers, names, authors and descriptions. Cover and descriptive-metadata downloads have separate switches. Service files and `.sdr` folders are hidden by default.
 
-The comic-folder header shows the cover, description and known document totals. Collapse it temporarily to see more chapters. **Continue reading** uses recent reading history or the latest matching native sidecar. If that chapter is complete, the button advances to the next unopened one. Long-press a chapter to change its read status. Downloaded CBZ, EPUB, PDF and supported CBR documents can generate local previews without enabling experiments. A folder without its own cover uses the first available cached-document preview in natural filename order. CB7 cover extraction is not guaranteed by the current runtime.
+The comic-folder header shows the cover, description and known document totals. Collapse it temporarily to see more chapters. **Continue reading** uses recent reading history or the latest matching native sidecar. If that chapter is complete, the button advances to the next unopened one. Long-press a chapter to change its read status. Downloaded CBZ, EPUB, PDF and supported CBR documents can generate local covers. RAR covers can take longer, especially with solid archives. Download a CBR before choosing a cover from it. A folder without its own cover uses the first available cached-document preview in natural filename order. CB7 cover extraction is not guaranteed by the current runtime.
 
 **Edit folder information** changes the title, description or cover. Edits take effect locally, queue safely while offline, and sync to a separate versioned `gdriveshelf.json` plus immutable cover files. Original `index.json`, `series.json`, `cover.jpg` and native progress are preserved. Conflicting edits retain both versions for a choice under **Downloads and sync**. The editor previews the current cover and lets you import an image, reset to the automatic cover, hide it, or choose a page from a downloaded volume. The quick first-page action can also read a remote CBZ through bounded byte ranges.
 
@@ -108,12 +112,13 @@ Native **End of document action → Open next file** advances inside the current
 
 Cloud sync writes native `<book>.sdr/metadata.<extension>.lua` beside documents on Drive. KOReader may store local metadata beside books, centrally, or by content hash; a local adjacent `.sdr` is **not required**. Other KOReader installations can use the cloud sidecars once the book and sidecar are available as ordinary local files. Everyone with access to that Drive folder can see those sidecars. Disabling sync keeps reading local.
 
-Downloaded Lua metadata is parsed as data, never executed. Conflicts preserve both versions for an explicit choice under **Downloads and sync**. Remote progress does not unexpectedly move an already-open book. Ambiguous duplicate names or changed book versions may require a manual decision.
+Downloaded Lua metadata is parsed as data, never executed. Conflicts preserve both versions. The default chooses the farther reading position when the verified file is identical and only the position differs. **Reading and sync** also offers a more-recent policy or manual selection. Open a conflict to compare pages, percentages, status and dates. Remote progress does not unexpectedly move an already-open book. Ambiguous duplicate names or changed book versions may require a manual decision.
 
 ## Optional experiments
 
 All experimental features start **off**:
 
+- **Quick CBZ preview** opens a chapter as images from its long-press menu. A remote session reads up to 32 MiB and always less than the full archive. It leaves reading progress and offline downloads alone.
 - **Chapter thumbnails** enables remote CBZ previews and manual recursive cover scanning. File tiles and existing local previews also work with this experiment disabled. An optional separate switch enables automatic scanning of the home library.
 - Remote previews use bounded HTTP ranges to read ZIP32 directories and the first image. Store and Deflate are supported; ZIP64, encrypted, damaged or oversized archives are skipped. No complete remote CBZ is downloaded for a preview, including across combined ranges. Already-cached archives are read locally.
 

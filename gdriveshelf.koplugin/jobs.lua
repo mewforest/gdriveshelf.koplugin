@@ -135,8 +135,8 @@ function Jobs:setOffline(value)
  end
  self:pump()
 end
-function Jobs:clear()
+function Jobs:clear(reason)
  self.offline=true
- local keys={};for k in pairs(self.keys) do keys[#keys+1]=k end;for _,k in ipairs(keys)do self:cancel(k)end
+ local keys={};for k in pairs(self.keys) do keys[#keys+1]=k end;for _,k in ipairs(keys)do self:cancel(k,reason)end
 end
 return Jobs

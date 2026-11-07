@@ -140,6 +140,16 @@ Android API 30 checks at 1404×1872 and 600×800 use a local comic archive and a
 
 The genuine AppStore installer also updated the packaged 0.1.7 build to 0.1.8 using simulated GitHub responses. The installed version stayed current after a separate-process restart. Authorization, documents, native progress, history and both outboxes retained their stored state.
 
+### Reader polish and public repository checks
+
+The conflict tests exercise version guards, an interrupted resolution, a newer local edit during verification, HTTP 412, and a stale cached cloud copy after an upload. The storage tests cover protected paths, scoped account cleanup, and same-account reimport. Native macOS KOReader verified that clearing an archive refreshes the same memory screen and preserves the .sdr.
+
+Native Android layout and interactions passed at 1404×1872 and 600×800. The compact run also verified that finishing a background download offers Open without entering the reader and that selective cleanup retains the native .sdr on the same storage screen. AppStore upgraded a separate test profile from the 0.1.8 release ZIP to the 0.1.9 candidate using fixture GitHub responses. Settings, credentials, history, and queues survived the restart.
+
+On Android API 30, the quick-preview viewer opened and turned a page using synthetic range responses. It removed its temporary files on close. Five cold-process runs per format used identical synthetic JPEGs in ZIP, ordinary RAR5 and solid RAR5 archives. Median CPU time for a first cover was 24.5 ms, 53.4 ms and 115.0 ms respectively. Peak process memory was about 105, 114 and 116 MiB. This compares the existing native paths on the emulator. Physical reader performance may differ.
+
+The publication review checked Git history and refs, eight preceding releases and Actions logs, zero retained Actions artifacts, and screenshot metadata plus OCR. The selected catalog screenshot is visually unchanged. It was saved as PNG without the source metadata. The owner authorized the visible catalog data and the existing commit identity. GitHub attributes the reviewed history to the same maintainer account. The repository remained private during validation.
+
 ### Physical readers
 
 Before relying on a physical reader, check:

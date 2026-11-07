@@ -10,6 +10,12 @@ local function stamp(entry)
     if not entry then return nil end
     return {id=entry.id,modified_time=entry.modified_time,checksum=entry.checksum,version=entry.version,etag=entry.etag,size=entry.size}
 end
+local function sameMetadataVersion(a,b)
+    if not a or not b or a.id~=b.id then return false end
+    if a.etag and b.etag then return a.etag==b.etag end
+    if a.version~=nil and b.version~=nil then return tostring(a.version)==tostring(b.version) end
+    return a.checksum and b.checksum and a.checksum==b.checksum and a.modified_time==b.modified_time
+end
 local function changed(sdr,a,b)
     if not a or not b then return false end
     if sdr.sameBook(a,b) then return false end
@@ -29,15 +35,22 @@ function Sync.new(opts)
     return self
 end
 function Sync:isOffline() return type(self.offline)=='function' and self.offline() or self.offline==true end
-function Sync:snapshot(entry,data)
+function Sync:snapshot(entry,data,force)
     local lua,e=self.sdr.encode(data); if not lua then return nil,err('invalid_local_metadata',e) end
     local old=self.state.pending[entry.id]; local base=self.state.bases[entry.id] or {}
     if old and old.chapter_status and (old.entry.name~=entry.name or old.entry.parent_id~=entry.parent_id or not self.sdr.sameBook(old.book_stamp,entry)) then
         return nil,err('book_changed','This chapter has changed; its pending progress was preserved')
     end
+    if not force and old and old.lua==lua and old.entry.name==entry.name and old.entry.parent_id==entry.parent_id
+        and self.sdr.sameBook(old.book_stamp,entry) then return old end
+    local previous=old and old.lua or base.lua
+    previous=previous and self.sdr.decode(previous)
+    local position_changed=not previous or previous.last_page~=data.last_page or previous.last_xpointer~=data.last_xpointer
+        or (data.last_page==nil and data.last_xpointer==nil and previous.percent_finished~=data.percent_finished)
     self.state.next_pending_seq=(self.state.next_pending_seq or 0)+1
     self.state.revision=(self.state.revision or 0)+1
     local pending={entry=copy(entry),lua=lua,book_stamp=stamp(entry),seq=old and old.seq or self.state.next_pending_seq,revision=self.state.revision}
+    pending.position_changed_at=position_changed and os.time() or (old and old.position_changed_at or base.position_changed_at)
     if old then
         pending.base_lua=old.base_lua; pending.base_stamp=copy(old.base_stamp); pending.base_book_stamp=copy(old.base_book_stamp)
         if old.chapter_status and self.sdr.summary(data).status==old.chapter_status then
@@ -45,7 +58,12 @@ function Sync:snapshot(entry,data)
         end
     else pending.base_lua=base.lua; pending.base_stamp=copy(base.stamp); pending.base_book_stamp=copy(base.book_stamp) end
     self.state.pending[entry.id]=pending
-    if self.state.conflicts[entry.id] then self.state.conflicts[entry.id].local_lua=lua end
+    local saved=self.state.conflicts[entry.id]
+    if saved then
+        local updated=copy(saved)
+        updated.local_lua=lua;updated.local_revision=pending.revision;updated.local_time=pending.position_changed_at
+        self.state.conflicts[entry.id]=updated
+    end
     return pending
 end
 function Sync:markChapter(entry,read)
@@ -60,7 +78,7 @@ function Sync:markChapter(entry,read)
         local e; data,e=self.sdr.decode(old.lua)
         if not data then return nil,err('invalid_pending',e) end
     end
-    local pending,e=self:snapshot(entry,self.sdr.setReadingStatus(data,status,date))
+    local pending,e=self:snapshot(entry,self.sdr.setReadingStatus(data,status,date),true)
     if not pending then return nil,e end
     pending.chapter_status=status
     pending.chapter_status_date=date
@@ -110,17 +128,25 @@ function Sync:pull(entry)
     -- Obtain a guard BEFORE reading. A stale guard makes an update fail safely.
     if self.provider.stat then
         local current,se=self.provider:stat(metadata.id); if not current then return nil,se or err('not_found','Metadata disappeared') end
-        if current.name~=metadata.name or current.parent_id~=metadata.parent_id then return nil,err('metadata_moved','Metadata identity changed') end
+        if current.id~=metadata.id or current.name~=metadata.name or current.parent_id~=metadata.parent_id then return nil,err('metadata_moved','Metadata identity changed') end
         metadata=current
     end
     local lua,re=self.provider:read(metadata,2*1024*1024); if not lua then return nil,re end
+    if self.provider.stat then
+        local after,se=self.provider:stat(metadata.id);if not after then return nil,se or err('not_found','Metadata disappeared') end
+        if after.name~=metadata.name or after.parent_id~=metadata.parent_id or not sameMetadataVersion(metadata,after) then
+            return nil,err('metadata_changed','Cloud progress changed while it was being read')
+        end
+    end
     local data,de=self.sdr.decode(lua); if not data then return nil,err('invalid_remote_metadata',de) end
     return {data=data,lua=lua,stamp=stamp(metadata),metadata=metadata,folder=found.folder,book_stamp=stamp(entry)}
 end
 local function conflict(pending,remote,reason)
-    return {action='conflict',conflict={reason=reason or 'both_changed',local_lua=pending.lua,remote_lua=remote.lua,base_lua=pending.base_lua,stamp=copy(remote.stamp),book_stamp=copy(remote.book_stamp)},stamp=remote.stamp,book_stamp=remote.book_stamp}
+    return {action='conflict',conflict={reason=reason or 'both_changed',local_lua=pending.lua,remote_lua=remote.lua,
+        base_lua=pending.base_lua,local_time=pending.position_changed_at,local_revision=pending.revision,
+        stamp=copy(remote.stamp),book_stamp=copy(remote.book_stamp)},stamp=remote.stamp,book_stamp=remote.book_stamp}
 end
-function Sync:push(entry,pending)
+function Sync:push(entry,pending,intent,guard)
     if self:isOffline() then return nil,err('offline','Sync is offline') end
     if not pending or not pending.entry or pending.entry.id~=entry.id then return nil,err('invalid_pending','Pending document identity mismatch') end
     local local_data,write_lua=nil,pending.lua
@@ -138,12 +164,30 @@ function Sync:push(entry,pending)
     if pending.chapter_status and (current.id~=entry.id or current.name~=pending.entry.name or current.parent_id~=pending.entry.parent_id) then
         return conflict(pending,{book_stamp=stamp(current)},'book_changed')
     end
-    local remote,re=self:pull(current); if not remote then return nil,re end
-    if current.name~=pending.entry.name or current.parent_id~=pending.entry.parent_id
-        or (pending.chapter_status and not self.sdr.sameBook(pending.book_stamp,stamp(current)))
-        or changed(self.sdr,pending.book_stamp,stamp(current)) or changed(self.sdr,pending.base_book_stamp,stamp(current)) then return conflict(pending,remote,'book_changed') end
+    local remote,re=self:pull(current)
+    if not remote and intent and re and re.code=='metadata_changed'then remote,re=self:pull(current)end
+    if not remote then return nil,re end
+    if current.id~=entry.id or current.name~=pending.entry.name or current.parent_id~=pending.entry.parent_id then return conflict(pending,remote,'book_changed') end
     local action
-    if pending.status_only then
+    if intent then
+        if not self.provider.stat or not self.sdr.sameBook(intent.book_stamp,current) then return conflict(pending,remote,'book_changed') end
+        if not guard or not guard() then return conflict(pending,remote,'changed_during_resolution') end
+        if intent.choice=='local' and remote.lua==intent.local_lua then
+            remote.action='same';return remote
+        end
+        if remote.lua~=intent.remote_lua or (remote.metadata and (not intent.stamp
+            or not remote.stamp or not remote.stamp.etag or not sameMetadataVersion(intent.stamp,remote.stamp)))
+            or (not remote.metadata and intent.stamp) then return conflict(pending,remote,'changed_during_resolution') end
+        if intent.choice=='remote' then remote.action='deferred';return remote end
+        if intent.choice~='local' then return nil,err('invalid_choice','Choose local or remote') end
+        write_lua=intent.local_lua
+        local_data=self.sdr.decode(write_lua)
+        if not local_data then return nil,err('invalid_pending','Could not validate saved local progress') end
+        action='push'
+    elseif (pending.chapter_status and not self.sdr.sameBook(pending.book_stamp,current))
+        or changed(self.sdr,pending.book_stamp,current) or changed(self.sdr,pending.base_book_stamp,current) then
+        return conflict(pending,remote,'book_changed')
+    elseif pending.status_only then
         local remote_status=self.sdr.summary(remote.data).status
         local base_status=self.sdr.summary(base_data).status
         if remote_status==pending.chapter_status or (not remote.data and pending.chapter_status=='reading') then
@@ -168,16 +212,34 @@ function Sync:push(entry,pending)
     if remote.metadata and not remote.stamp.etag then return nil,err('unguarded_write','Provider supplied no conditional-write token; remote metadata was preserved') end
     local folder=remote.folder
     if not folder then
+        if intent and not guard() then return conflict(pending,remote,'changed_during_resolution') end
         local me; folder,me=self.provider:mkdir(entry.parent_id,self.sdr.sidecarName(entry.name)); if not folder then return nil,me end
         -- A concurrent creator may have made another native folder. Never choose one.
         local verified,ve=self:locate(entry); if not verified then return nil,ve end
         if not verified.folder or verified.folder.id~=folder.id or verified.metadata then return nil,err('concurrent_creation','Remote sidecar changed during creation; retry from fresh state') end
     end
     local path,pe=self.storage:writeTemp(write_lua); if not path then return nil,pe end
+    if intent then
+        local latest,se=self.provider:stat(entry.id)
+        local same=latest and self.sdr.sameBook(intent.book_stamp,latest)
+            and latest.name==current.name and latest.parent_id==current.parent_id
+        if not same or not guard() then
+            if self.storage.remove then self.storage:remove(path) end
+            if not latest then return nil,se end
+            return conflict(pending,remote,same and 'changed_during_resolution' or 'book_changed')
+        end
+    end
     local ok,uploaded,ue=pcall(self.provider.upload,self.provider,folder.id,self.sdr.metadataName(entry.name),path,remote.metadata and remote.metadata.id,remote.stamp and remote.stamp.etag)
     if self.storage.remove then self.storage:remove(path) end
     if not ok then return nil,err('upload_failed',tostring(uploaded)) end
-    if not uploaded then return nil,ue end
+    if not uploaded then
+        if intent and ue and tonumber(ue.status)==412 then
+            local fresh,fe=self:pull(current)
+            if not fresh then return nil,fe end
+            return conflict(pending,fresh,'changed_during_resolution')
+        end
+        return nil,ue
+    end
     -- Name creation cannot be made unique atomically by every provider. Detect
     -- duplicates after creating; all files remain intact for manual resolution.
     if not remote.metadata then
@@ -190,6 +252,7 @@ end
 function Sync:commit(entry,pending,result)
     if result.action=='conflict' then
         local saved=copy(result.conflict); local latest=self.state.pending[entry.id]
+        if latest then saved.local_revision=latest.revision;saved.local_time=latest.position_changed_at end
         if latest and latest.lua then saved.local_lua=latest.lua
         elseif latest and latest.status_only and saved.remote_lua then
             local remote=self.sdr.decode(saved.remote_lua)
@@ -200,7 +263,8 @@ function Sync:commit(entry,pending,result)
         self.state.conflicts[entry.id]=saved; return result
     end
     if result.action~='pushed' and result.action~='same' and result.action~='pull' then return nil,err('invalid_result','Unknown synchronization result') end
-    local base={lua=result.lua,stamp=copy(result.stamp),book_stamp=copy(result.book_stamp)}
+    local base={lua=result.lua,stamp=copy(result.stamp),book_stamp=copy(result.book_stamp),
+        position_changed_at=result.action~='pull' and pending and pending.position_changed_at or nil}
     self.state.bases[entry.id]=base; self.state.conflicts[entry.id]=nil
     local latest=self.state.pending[entry.id]
     if latest and pending and latest.revision==pending.revision then self.state.pending[entry.id]=nil

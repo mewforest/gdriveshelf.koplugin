@@ -165,4 +165,12 @@ test('missing conditional token on both API versions fails closed',function()
     local p=provider(function(r)return 200,{},'stat' end)
     local value,e=p:stat('a');assert(not value and e.code=='invalid_response')
 end)
+test('small media is bound to the advertised Drive checksum',function()
+    local p=provider(function()return 200,{},'abc' end)
+    local entry={id='media',size=3,checksum='900150983CD24FB0D6963F7D28E17F72'}
+    assert(p:read(entry,16)=='abc')
+    entry.checksum='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    local result,e=p:read(entry,16)
+    assert(not result and e.code=='checksum_mismatch')
+end)
 print(count .. ' provider tests passed')

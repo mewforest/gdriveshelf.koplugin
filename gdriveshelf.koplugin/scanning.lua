@@ -42,7 +42,7 @@ return function(Core)
      self.storage:remove(incoming)
      -- Cancellation/network failures are retryable; unsupported formats wait for
      -- a changed source, preventing repeated expensive failures on every visit.
-     if result or(err and(err.code=='preview'or err.code=='range'))then self.state.preview_attempts[entry.id]={fingerprint=stamp,skipped=not result}end
+     if result or(err and(err.code=='preview'or err.code=='preview_limit'or err.code=='preview_format'or err.code=='range'))then self.state.preview_attempts[entry.id]={fingerprint=stamp,skipped=not result}end
      if not result then job.skipped=job.skipped+1 end
      job.done=job.done+1;self:save();self:emit('thumbnail',entry);advance()
     end,false,function()

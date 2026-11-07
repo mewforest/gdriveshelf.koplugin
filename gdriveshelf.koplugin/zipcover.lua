@@ -33,31 +33,51 @@ local function inflate(data,size)
  assert(result==1 and length==size and remaining==0,'Invalid bounded deflate')
  return ffi.string(buffer,length)
 end
-local function archive(file,fetch,local_file,limit)
- local size=assert(tonumber(file.size));assert(size>=23,'Invalid ZIP size')
- local ranges,transferred={},0
+local function problem(code,message)error({code=code,message=message},0)end
+local function previewError()
+ return {code='preview',message='The CBZ archive is damaged or unreadable'}
+end
+function Z.partialReader(file,fetch,local_file,limit)
+ local size=tonumber(file.size)
+ local transferred=0
  local function read(first,last)
-  assert(first>=0 and last>=first and last<size,'Invalid ZIP offset')
-  local count=last-first+1;assert(transferred+count<=limit,'Preview transfer budget');assert(local_file or transferred+count<size,'Complete-file transfer budget refused')
-  local nextRanges={};for _,r in ipairs(ranges)do nextRanges[#nextRanges+1]=r end;nextRanges[#nextRanges+1]={first,last}
-  table.sort(nextRanges,function(a,b)return a[1]<b[1]end)
-  local covered,lo,hi=0,nil,nil
-  for _,r in ipairs(nextRanges)do
-   if not lo then lo,hi=r[1],r[2]elseif r[1]<=hi+1 then hi=math.max(hi,r[2])else covered=covered+hi-lo+1;lo,hi=r[1],r[2]end
+  assert(size and first>=0 and last>=first and last<size,'Invalid ZIP offset')
+  local count=last-first+1
+  if transferred+count>limit or (not local_file and transferred+count>=size)then
+   problem('preview_limit','Archive preview byte limit reached')
   end
-  covered=covered+hi-lo+1;assert(local_file or covered<size,'Complete remote ZIP refused')
+  -- A failed response may already have transferred part of the range.
+  transferred=transferred+count
   local data,why=fetch(first,last)
   if not data and type(why)=='table'and type(why.code)=='string'then error(why,0)end
-  assert(data);assert(#data==count,'Incomplete ZIP range')
-  ranges=nextRanges;transferred=transferred+count;return data
+  assert(data and #data==count,'Incomplete ZIP range')
+  return data
  end
- local tail=read(size-math.min(65557,size-1),size-1);local eocd
- for p=#tail-21,1,-1 do if tail:sub(p,p+3)=='PK\5\6'and p+21+n(tail,p+20,2)==#tail then eocd=p;break end end
+ return read,function()return transferred end
+end
+local function parseIndex(file,read,fast)
+ local size=assert(tonumber(file.size));assert(size>=23,'Invalid ZIP size')
+ local tail,eocd
+ if fast then
+  tail=read(size-22,size-1)
+  if tail:sub(1,4)=='PK\5\6'and n(tail,21,2)==0 then eocd=1 end
+ end
+ if not eocd then
+  tail=read(size-math.min(65557,size-1),size-1)
+  for p=#tail-21,1,-1 do
+   if tail:sub(p,p+3)=='PK\5\6'and p+21+n(tail,p+20,2)==#tail then eocd=p;break end
+  end
+ end
  assert(eocd,'Missing ZIP directory')
- assert(n(tail,eocd+4,2)==0 and n(tail,eocd+6,2)==0,'Multi-disk ZIP')
+ if n(tail,eocd+4,2)~=0 or n(tail,eocd+6,2)~=0 then
+  problem('preview_format','This CBZ archive format is unsupported')
+ end
  local count=n(tail,eocd+10,2);local directorySize=n(tail,eocd+12,4);local directoryOffset=n(tail,eocd+16,4)
- assert(count<65535 and directorySize<4294967295 and directoryOffset<4294967295,'ZIP64 unsupported')
- assert(directorySize>0 and directorySize<=MiB and directoryOffset+directorySize<=size-22,'ZIP directory budget')
+ if count==65535 or directorySize==4294967295 or directoryOffset==4294967295 then
+  problem('preview_format','This CBZ archive format is unsupported')
+ end
+ if directorySize>MiB then problem('preview_limit','Archive preview byte limit reached')end
+ assert(directorySize>0 and directoryOffset+directorySize<=size-22,'Invalid ZIP directory')
  local directory=read(directoryOffset,directoryOffset+directorySize-1);local images={};local pos=1
  for index=1,count do
   assert(directory:sub(pos,pos+3)=='PK\1\2','Invalid ZIP entry')
@@ -72,11 +92,16 @@ local function archive(file,fetch,local_file,limit)
   pos=pos+46+nameLength+extraLength+commentLength;assert(pos<=#directory+1)
  end
  assert(#images>0,'No image in ZIP')
- return require('gdriveshelf/library').ordered(images,'natural'),directoryOffset,read,function()return transferred end
+ return {images=require('gdriveshelf/library').ordered(images,'natural'),offset=directoryOffset}
 end
 local function imageData(image,directoryOffset,read)
- assert(require('bit').band(image.flags,1)==0 and(image.method==0 or image.method==8),'Unsupported encrypted/compressed image')
- assert(image.expanded>0 and image.expanded<=16*MiB and image.compressed>0 and image.compressed<=8*MiB,'Image byte budget')
+ if require('bit').band(image.flags,1)~=0 or (image.method~=0 and image.method~=8)then
+  problem('preview_format','This CBZ archive format is unsupported')
+ end
+ if image.expanded>16*MiB or image.compressed>8*MiB then
+  problem('preview_limit','Archive preview byte limit reached')
+ end
+ assert(image.expanded>0 and image.compressed>0,'Invalid image size')
  local header=read(image.offset,image.offset+29);assert(header:sub(1,4)=='PK\3\4','Invalid local ZIP header')
  assert(n(header,7,2)==image.flags and n(header,9,2)==image.method,'ZIP headers disagree')
  local offset=image.offset+30+n(header,27,2)+n(header,29,2)
@@ -86,19 +111,33 @@ local function imageData(image,directoryOffset,read)
  assert(Z.crc32(data)==image.crc,'ZIP checksum mismatch')
  return data
 end
-local function extract(file,fetch,options)
- local images,directoryOffset,read,transferred=archive(file,fetch,options and options.local_file,8*MiB)
- local image=images[1]
- return imageData(image,directoryOffset,read),image,{bytes=transferred()}
+local function checked(fn,...)
+ local ok,value,other,stats=pcall(fn,...)
+ if ok then return value,other,stats end
+ if type(value)=='table'and type(value.code)=='string'then return nil,value end
+ return nil,previewError()
 end
-local function previewError()
- return {code='preview',message='Archive preview unavailable: unsupported, changed, damaged or over budget'}
+function Z.previewIndex(file,read)
+ local index,err=checked(parseIndex,file,read,true)
+ if index then
+  -- Filenames are useful only to order pages. The preview keeps numeric
+  -- offsets and sizes, which also makes its worker result encoding compact.
+  for _,image in ipairs(index.images)do image.id=nil;image.name=nil end
+ end
+ return index,err
+end
+function Z.previewPage(index,number,read)
+ local image=index.images[number]
+ if not image then return nil,previewError()end
+ return checked(imageData,image,index.offset,read)
 end
 function Z.extract(file,fetch,options)
- local ok,data,image,stats=pcall(extract,file,fetch,options)
- if ok then return data,image,stats end
- if type(data)=='table'and type(data.code)=='string'then return nil,data end
- return nil,previewError()
+ return checked(function()
+  local read,transferred=Z.partialReader(file,fetch,options and options.local_file,8*MiB)
+  local index=parseIndex(file,read)
+  local image=index.images[1]
+  return imageData(image,index.offset,read),image,{bytes=transferred()}
+ end)
 end
 function Z.pageWindow(total,first,count)
  if type(first)~='number'or first<1 or first%1~=0 or type(count)~='number'or count<1 or count>6 or count%1~=0 then return nil end
@@ -109,13 +148,14 @@ end
 -- if the caller asks for a larger batch.
 function Z.pages(file,fetch,first,count,visitor)
  local ok,result=pcall(function()
-  local images,directoryOffset,read=archive(file,fetch,true,50*MiB)
-  local last=assert(Z.pageWindow(#images,first,count))
+  local read=Z.partialReader(file,fetch,true,50*MiB)
+  local index=parseIndex(file,read)
+  local last=assert(Z.pageWindow(#index.images,first,count))
   for number=first,last do
-   local decoded,data=pcall(imageData,images[number],directoryOffset,read)
-   if decoded then visitor(number,data)else visitor(number,nil,previewError())end
+   local data,err=Z.previewPage(index,number,read)
+   visitor(number,data,err)
   end
-  return {total=#images,first=first}
+  return {total=#index.images,first=first}
  end)
  if ok then return result end
  return nil,previewError()

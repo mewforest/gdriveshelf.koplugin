@@ -211,8 +211,113 @@ local function sameMetadata(a,b)
     for k in pairs(b) do if k~='doc_path' and a[k]==nil then return false end end
     return true
 end
+M.sameMetadata=sameMetadata
+
+-- This is deliberately narrower than the progress display. Clamped percentages
+-- and opaque reflowable locations must never decide which snapshot to replace.
+local fixed_page={cbz=true,cbr=true,cb7=true,pdf=true,djvu=true}
+local function pagePosition(data)
+    local page=data and data.last_page
+    local pages=data and data.doc_pages
+    if not finite(page) or page<1 or page%1~=0 or page>10000000 then return nil end
+    if pages~=nil and (not finite(pages) or pages<page or pages%1~=0) then return nil end
+    local percent=data.percent_finished
+    if percent~=nil and (not finite(percent) or percent<0 or percent>1
+        or (pages and math.abs(percent-page/pages)>.01)) then return nil end
+    if data.last_xpointer~=nil then return nil end
+    return page,percent
+end
+local function projected(data)
+    local result={}
+    for key,value in pairs(data or {}) do
+        if key=='summary' and type(value)=='table' then
+            local summary={}
+            for name,field in pairs(value) do if name~='modified' then summary[name]=field end end
+            if next(summary) then result.summary=summary end
+        elseif key~='doc_path' and key~='last_page' and key~='percent_finished' then result[key]=value end
+    end
+    return result
+end
+local monthDays={31,28,31,30,31,30,31,31,30,31,30,31}
+local function leap(year)return year%4==0 and (year%100~=0 or year%400==0)end
+local function daysBeforeYear(year)
+    local last=year-1
+    return 365*last+math.floor(last/4)-math.floor(last/100)+math.floor(last/400)
+end
+local function utcTime(text)
+    if type(text)~='string' then return nil end
+    local y,m,d,h,n,s,tail=text:match('^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.-)Z$')
+    if not y or (tail~='' and not tail:match('^%.%d+$')) then return nil end
+    y,m,d,h,n,s=tonumber(y),tonumber(m),tonumber(d),tonumber(h),tonumber(n),tonumber(s)
+    if y<1970 or m<1 or m>12 or d<1 or d>monthDays[m]+(m==2 and leap(y) and 1 or 0)
+        or h>23 or n>59 or s>59 then return nil end
+    local days=daysBeforeYear(y)-daysBeforeYear(1970)+d-1
+    for month=1,m-1 do days=days+monthDays[month] end
+    if m>2 and leap(y) then days=days+1 end
+    return days*86400+h*3600+n*60+s+(tonumber(tail) or 0)
+end
+M.utcTime=utcTime
+function M.automaticChoice(entry,local_data,remote_data,policy,local_time,remote_time,now)
+    if not fixed_page[(entry.name or ''):lower():match('%.([^%.]+)$')]
+        or (policy~='farthest' and policy~='freshest') then return nil end
+    local local_page,local_percent=pagePosition(local_data)
+    local remote_page,remote_percent=pagePosition(remote_data)
+    if not local_page or not remote_page or local_page==remote_page
+        or not equal(projected(local_data),projected(remote_data)) then return nil end
+    if local_percent and remote_percent and ((local_page>remote_page and local_percent<remote_percent)
+        or (local_page<remote_page and local_percent>remote_percent)) then return nil end
+    if policy=='farthest' then return local_page>remote_page and 'local' or 'remote' end
+    local_time=tonumber(local_time)
+    remote_time=utcTime(remote_time)
+    now=now or os.time()
+    if not finite(local_time) or not remote_time or local_time<=0 or local_time>now+300
+        or remote_time>now+300 or math.abs(local_time-remote_time)<5 then return nil end
+    return local_time>remote_time and 'local' or 'remote'
+end
+local function described(data,date)
+    if not data then return nil end
+    local summary=M.summary(data)
+    if type(date)=='number' and finite(date) and date>0 then
+        local ok,formatted=pcall(os.date,'!%Y-%m-%dT%H:%M:%SZ',date)
+        if ok then summary.date=formatted end
+    elseif utcTime(date) then summary.date=date end
+    if not summary.date and type(data.summary)=='table' and type(data.summary.modified)=='string'
+        and data.summary.modified:match('^%d%d%d%d%-%d%d%-%d%d$') then summary.date=data.summary.modified end
+    if summary.status~='reading' and summary.status~='complete' and summary.status~='abandoned'
+        and summary.status~='new' then summary.status=nil end
+    return summary
+end
+function M.describeConflict(saved)
+    local l=saved.local_lua and M.decode(saved.local_lua)
+    local r=saved.remote_lua and M.decode(saved.remote_lua)
+    local differences={}
+    if l and r then
+        local a,b=projected(l),projected(r)
+        for _,key in ipairs{'annotations','bookmarks','highlights'} do
+            if not equal(a[key],b[key]) then
+                if not differences[1] then differences[1]='annotations' end
+                a[key],b[key]=nil,nil
+            end
+        end
+        if M.summary(l).status~=M.summary(r).status then
+            differences[#differences+1]='status'
+            if type(a.summary)=='table' then a.summary.status=nil;if not next(a.summary) then a.summary=nil end end
+            if type(b.summary)=='table' then b.summary.status=nil;if not next(b.summary) then b.summary=nil end end
+        end
+        if not equal(a,b) then differences[#differences+1]='settings' end
+        if l.last_page~=r.last_page or l.percent_finished~=r.percent_finished or l.last_xpointer~=r.last_xpointer then
+            differences[#differences+1]='position'
+        end
+    end
+    return {local_version=described(l,saved.local_time),remote_version=described(r,saved.stamp and saved.stamp.modified_time),
+        differences=differences}
+end
 function M.decide(base,local_data,remote)
     if sameMetadata(local_data,remote) then return 'same' end
+    if type(local_data)=='table' and type(remote)=='table' and local_data.last_page==remote.last_page
+        and local_data.percent_finished==remote.percent_finished and equal(projected(local_data),projected(remote)) then
+        return 'same'
+    end
     if sameMetadata(base,remote) then return 'push' end
     if sameMetadata(base,local_data) then return 'pull' end
     return 'conflict'

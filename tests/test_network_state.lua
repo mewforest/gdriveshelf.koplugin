@@ -149,5 +149,16 @@ test('light mode pauses automatic downloads while keeping a foreground download 
  c:resetNetwork(nil,true)
  assert(j.keys['download:auto']and c.state.downloads.auto.automatic==false)
 end)
+test('retired account ignores late credentials and queued UI results',function()
+ now=1000;local c,j,finish=setup()
+ local writes,callbacks=0,0
+ c.oncredentials=function()writes=writes+1 end
+ c.provider_factory=function()return {credentials={access_token='fixture-access'}}end
+ c:network('old-account',function()return {}end,function()callbacks=callbacks+1 end)
+ c.retired=true
+ finish()
+ H.eq(writes,0);H.eq(callbacks,0);H.eq(c:networkState(),'auth')
+ assert(not c:network('new-request',function()return {}end)and not j.active)
+end)
 os.time=real_time
 assert(failures==0,tostring(failures)..' network state tests failed')

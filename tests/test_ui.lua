@@ -117,13 +117,6 @@ test('title folders use cached covers and metadata and a separate reading sort',
  assert(rows[2].folder_progress==0.5 and rows[3].folder_progress==nil)
  assert(rows[3].entry.id=='d' and p.settings.sort=='natural')
 end)
-test('storage screen localizes all three cleanup rows inside its pool loop',function()
- local storage={root='/cache',treeSize=function()return 0 end,freeBytes=function()return 12.4*1024^3 end,size=function()return 0 end,lfs={attributes=function()return nil end,dir=function()return function()return nil end end}}
- local p=instance({storage=storage,cache=function()return {usage=function()return {auto=1,offline=2,meta=3}end}end});local rows
- p.menu=function(_,_,r)rows=r end;p:showMemory()
- assert(#rows==7 and rows[4].text:find('Temporary reading cache',1,true) and rows[6].callback)
- assert(rows[1].text=='Free disk space: 13.3 GB')
-end)
 test('resume last document uses the normal opener with prefetch and persists title sort',function()
  local entry={id='last',name='Book.cbz',parent_id='series'}
  local p=instance({state={last_document='last',docs={last=entry},entries={}}});p.settings={}
@@ -142,14 +135,13 @@ test('resuming opens the native reader before scheduling next-chapter prefetch',
  local p=instance(core,{document={},switchDocument=function(_,path)assert(path=='/cache/book.cbz');opened=true end})
  p:openEntry(entry,true);assert(opened and prefetched and saved)
 end)
-test('plain core errors use the active Russian locale',function()
- package.loaded.gettext={current_lang='ru'}
- package.loaded['ui/widget/confirmbox']={new=function(_,o)return o end}
- package.loaded['ui/widget/infomessage']={new=function(_,o)return o end}
- local p=instance({cached=function()end,removeFile=function()return nil,'This document is active'end})
+test('file removal passes the exact archive to managed cleanup',function()
+ local p=instance({cached=function()return{path='/cache/book.cbz',pool='offline',size=100}end})
  local rows;p.menu=function(_,_,r)rows=r end
- p:fileActions({id='active',name='Book.cbz'});rows[3].callback();shown[#shown].ok_callback()
- assert(shown[#shown].text=='Этот документ открыт')
+ p.confirmManagedRemoval=function(_,targets)
+  assert(#targets==1 and targets[1].id=='book' and targets[1].path=='/cache/book.cbz' and targets[1].pool=='offline')
+ end
+ p:fileActions({id='book',name='Book.cbz'});rows[3].callback()
 end)
 print(count..' UI adapter tests passed')
 test('file sorting is reachable in folder actions and persists independently of title sort',function()

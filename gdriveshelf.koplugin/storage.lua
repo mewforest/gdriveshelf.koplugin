@@ -1,4 +1,12 @@
 local S={};S.__index=S
+local function basename(name)
+ return type(name)=='string' and name~='' and name~='.' and name~='..' and not name:find('[%z%c/\\]')
+end
+local function bookRelative(path)
+ if type(path)~='string'then return nil end
+ local folder,file=path:match('^([^/]+)/([^/]+)$')
+ if basename(folder)and basename(file)then return folder,file end
+end
 function S.safeName(name)
  local n=tostring(name or 'file'):gsub('[%z\1-\31/\\]','_'):gsub('^%.+$','_')
  return n~='' and n:sub(1,180) or 'file'
@@ -48,9 +56,35 @@ function S:remove(path) return os.remove(path) end
 function S:size(path) return self.lfs.attributes(path,'size') or 0 end
 function S:exists(path) return self.lfs.attributes(path,'mode')=='file' end
 function S:treeSize(path)
- local a=self.lfs.attributes(path);if not a then return 0 end
+ local a=self.lfs.symlinkattributes(path);if not a or a.mode=='link'then return 0 end
  if a.mode~='directory' then return a.size or 0 end
  local n=0;for f in self.lfs.dir(path) do if f~='.' and f~='..' then local p=path..'/'..f;local s=self.lfs.symlinkattributes(p);if s and s.mode~='link' then n=n+self:treeSize(p) end end end;return n
+end
+function S:bookRegistry()
+ local data=self:readJSON(self.books_dir..'/.gdriveshelf-paths.json',16*1048576)
+ return data and type(data.files)=='table'and data.files or {}
+end
+function S:managedPath(entry,registry)
+ if type(entry.id)~='string'or type(entry.path)~='string'then return false end
+ local root,relative,folder
+ if entry.pool=='auto'or entry.pool=='offline'then
+  root=self.books_dir
+  relative=(registry or self:bookRegistry())[S.key(self.account)..':'..S.key(entry.id)]
+  folder=bookRelative(relative)
+  if not folder or entry.path~=root..'/'..relative or entry.preview_path then return false end
+ elseif entry.pool=='meta'then
+  root=self.root..'/meta'
+  if self.lfs.symlinkattributes(root,'mode')=='link'then return false end
+  folder=S.key(entry.id)
+  local prefix=root..'/'..folder..'/'
+  if entry.path:sub(1,#prefix)~=prefix or not basename(entry.path:sub(#prefix+1))then return false end
+  if entry.preview_path and entry.preview_path~=prefix..'cover-preview.png'then return false end
+ else return false end
+ local mode=self.lfs.symlinkattributes(root..'/'..folder,'mode')
+ if mode and mode~='directory'then return false end
+ local attr=self.lfs.symlinkattributes(entry.path)
+ if attr and attr.mode~='file'then return false end
+ return true,attr
 end
 -- Old-session incoming files are never ready archives. Unlinking an orphan's
 -- open partial file is safe: it cannot publish into the new session's namespace.
@@ -73,9 +107,9 @@ function S:cleanupDownloads(entries)
  -- basenames owned by this account, never recursively clean a chosen folder.
  local registry=self.books_dir and self:readJSON(self.books_dir..'/.gdriveshelf-paths.json',16*1048576)
  local owner=S.key(self.account or self.root)..':'
- for key,relative in pairs(registry and registry.files or {})do if key:sub(1,#owner)==owner then
-  local folder,base=relative:match('^(.*)/([^/]+)$');local dir=self.books_dir..'/'..folder
-  if self.lfs.attributes(dir,'mode')=='directory'then
+ for key,relative in pairs(registry and type(registry.files)=='table'and registry.files or {})do if key:sub(1,#owner)==owner then
+  local folder,base=bookRelative(relative);local dir=folder and self.books_dir..'/'..folder
+  if dir and self.lfs.symlinkattributes(dir,'mode')=='directory'then
    for name in self.lfs.dir(dir)do
     if name:sub(1,#base+10)==base..'.incoming-'and not ready[dir..'/'..name]then
      local suffix=name:sub(#base+11)
@@ -110,7 +144,11 @@ function S:filePath(entry,pool)
  map=map or {folders={},files={}};map.folders=map.folders or {};map.files=map.files or {}
  local owner=S.key(self.account or self.root)..':'
  local filekey=owner..S.key(entry.id)
- if map.files[filekey]then return self.books_dir..'/'..map.files[filekey]end
+ if map.files[filekey]then
+  local folder=assert(bookRelative(map.files[filekey]),'Invalid stored document path')
+  assert(self.lfs.symlinkattributes(self.books_dir..'/'..folder,'mode')~='link','Invalid stored document directory')
+  return self.books_dir..'/'..map.files[filekey]
+ end
  local function allocate(base,key,values,parent,is_file)
   base=S.safeName(base);local stem,ext=base:match('^(.*)(%.[^%.]+)$')
   if not is_file or not stem then stem,ext=base,''end
@@ -129,6 +167,7 @@ function S:filePath(entry,pool)
   folder=allocate(entry.parent_name or entry.parent_id or 'Library',folderkey,map.folders,nil,false)
   map.folders[folderkey]=folder
  end
+ assert(basename(folder)and self.lfs.symlinkattributes(self.books_dir..'/'..folder,'mode')~='link','Invalid stored document directory')
  assert(self:mkdir(self.books_dir..'/'..folder))
  local relative=allocate(entry.name,entry.id,map.files,folder,true)
  map.files[filekey]=relative

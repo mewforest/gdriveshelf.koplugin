@@ -149,6 +149,7 @@ return function(Core)
      pulse()
     end
     replaceListing(self,batch,parent,out,pulse)
+    batch.listings[parent].dirty=true
    end
    pulse()
   end

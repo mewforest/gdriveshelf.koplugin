@@ -1,12 +1,4 @@
 local I={}
-function I.chooseStartup(shelf)
- local settings=G_reader_settings
- shelf:menu(require('gdriveshelf/i18n').gettext('Start with'),{
-  {text='Google Drive Shelf',callback=function()settings:saveSetting('start_with','gdriveshelf')end},
-  {text=require('gdriveshelf/i18n').gettext('File browser'),callback=function()settings:saveSetting('start_with','filemanager')end},
-  {text=require('gdriveshelf/i18n').gettext('Most recent document'),callback=function()settings:saveSetting('start_with','last')end},
- })
-end
 function I.install(shelf,shared)
  if shared.integration then return end;shared.integration=true
  local ok,FMMenu=pcall(require,'apps/filemanager/filemanagermenu')
@@ -26,6 +18,6 @@ function I.install(shelf,shared)
    local ok,lfs=pcall(require,'libs/libkoreader-lfs');if ok and lfs.attributes(value)then return end
   end
  end
- require('ui/uimanager'):nextTick(function()shelf:runAction(function()if not shelf.ui.tearing_down then shelf:showLibrary()end end)end)
+ require('ui/uimanager'):nextTick(function()shelf:runAction(function()if not shelf.ui.tearing_down then shelf.startup_loading=true;shelf:showLibrary()end end)end)
 end
 return I

@@ -103,7 +103,15 @@ end)
 H.test('manual first-chapter extraction explains offline missing first chapter rather than choosing another',function()
  local c,e,clean=fixture();c.entries={{id='first',name='00.cbz',parent_id='folder',size=100,version='1'},e}
  local why;local accepted=c:extractFolderCover({id='folder'},function(_,err)why=err end)
- assert(not accepted and why and why.code=='preview');H.eq(#c.jobs.queue,0);clean()
+ assert(not accepted and why and why.code=='offline');H.eq(#c.jobs.queue,0);clean()
+end)
+H.test('an uncached CBR never uses the CBZ range path',function()
+ local c,e,clean=fixture();c.settings.offline=false
+ c.entries={{id='first',name='00.cbr',parent_id='folder',size=100,version='1'},e}
+ c.network=function()error('Remote CBR was passed to the CBZ extractor')end
+ local why;local accepted=c:extractFolderCover({id='folder'},function(_,err)why=err end)
+ assert(not accepted and why and why.code=='download_cbr')
+ H.eq(why.message,'Download the CBR volume before choosing a cover.');clean()
 end)
 H.test('a local CBZ disappearing before the worker starts is a safe preview skip',function()
  local ok,result,err=pcall(Covers.build,{name='missing.cbz',size=1024},{path='/no-such-gdriveshelf-cover-fixture'},os.tmpname())

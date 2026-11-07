@@ -10,6 +10,7 @@ local Library=require('gdriveshelf/library')
 local Metadata=require('gdriveshelf/metadata')
 local SDR=require('gdriveshelf/sdr')
 local I18N=require('gdriveshelf/i18n')
+local Manage=require('gdriveshelf/manage')
 local tr=I18N.gettext
 local F=I18N.format
 local shared=package.loaded['gdriveshelf/runtime'] or {owners=setmetatable({},{__mode='k'})}
@@ -46,12 +47,25 @@ function Shelf:runAction(callback,...)
  if not ok then pcall(problem,a);return false,a end
  return a,b
 end
+function Shelf:trackAccountWidget(widget)
+ self._account_widgets=self._account_widgets or setmetatable({},{__mode='k'})
+ if self.core then self._account_widgets[widget]=self.core end
+ return widget
+end
 function Shelf:confirmation(options)
+ local core,widget=self.core
  for _,key in ipairs{'ok_callback','cancel_callback'}do
   local callback=options[key]
-  if callback then options[key]=function(...)return self:runAction(callback,...)end end
+  if callback then options[key]=function(...)
+   if core and (self.core~=core or core.retired)then return end
+   widget._shelf_running=true
+   local ok,err=self:runAction(callback,...)
+   widget._shelf_running=nil
+   return ok,err
+  end end
  end
- return require('ui/widget/confirmbox'):new(options)
+ widget=require('ui/widget/confirmbox'):new(options)
+ return self:trackAccountWidget(widget)
 end
 local function privateJSON(path,data)
  local ffi=require('ffi');require('ffi/posix_h')
@@ -61,6 +75,7 @@ local function privateJSON(path,data)
  -- Start private even while the atomic replacement is being written.
  local bit=require('bit')
  local tmp=path..'.new';os.remove(tmp)
+ -- Exclusive create prevents a pre-existing symlink from being followed.
  local fd=ffi.C.open(tmp,bit.bor(ffi.C.O_CREAT,ffi.C.O_WRONLY,ffi.C.O_TRUNC,jit.os=='OSX' and 2048 or 128),ffi.cast('mode_t',384))
  if fd<0 then return nil end
  local secured=ffi.C.fchmod(fd,384)==0
@@ -92,20 +107,36 @@ function Shelf:getCore()
   local json=require('json');local credentials={}
   local f=io.open(shared.settings_dir..'/gdriveshelf-credentials.json','rb')
   if f then local text=f:read(1048577);f:close();if text and #text<=1048576 then local ok,c=pcall(json.decode,text);if ok and type(c)=='table'then credentials=c end end end
-  local account=credentials.account_id and Storage.key(credentials.account_id) or require('ffi/sha2').sha256(credentials.refresh_token or 'unconfigured')
+  local account=credentials.account_id and Storage.key(credentials.account_id)
+   or require('ffi/sha2').sha256(credentials.refresh_token or 'unconfigured')
+  if credentials.account_id==nil and type(credentials.local_cache_account)=='string'
+    and #credentials.local_cache_account==64 and credentials.local_cache_account:match('^%x+$')then
+   account=credentials.local_cache_account
+  end
+  if credentials.refresh_token and Manage.accountHome(self.settings,account)then self:saveSettings()end
   local storage=Storage.new{root=self.settings.cache_dir..'/drive-'..account,books_dir=self.settings.books_dir or self.settings.cache_dir..'/Books',account=account,json=json}
   local jobs=Jobs.new{storage=storage,dir=storage.root..'/jobs'}
   local provider=require('gdriveshelf/providers/gdrive')
-  shared.core=Core.new{storage=storage,jobs=jobs,current_path=self.ui.document and self.ui.document.file,credentials=credentials,settings=self.settings,
+  local core
+  core=Core.new{storage=storage,jobs=jobs,current_path=self.ui.document and self.ui.document.file,credentials=credentials,settings=self.settings,
    provider_factory=function(c)return provider.new{credentials=c,ca_file=pluginRoot..'/cacert.pem'}end,
-   onchange=function(kind,entry,e)for owner in pairs(shared.owners)do owner:onCoreChange(kind,entry,e)end end}
+   onchange=function(kind,entry,e)
+    if not core or core.retired or shared.core~=core then return end
+    for owner in pairs(shared.owners)do owner:onCoreChange(kind,entry,e)end
+   end}
+  shared.core=core
   local logdir=require('datastorage'):getDataDir()..'/gdriveshelf/logs'
   if self.settings.diagnostics then storage:mkdir(logdir)end
   local version='0.0.0-dev';local vf=io.open(pluginRoot..'/PACKAGE_VERSION','rb')
   if vf then version=(vf:read(64)or version):gsub('%s+$','');vf:close()end
   shared.core.logger=require('gdriveshelf/diagnostics').new{dir=logdir,enabled=function()return self.settings.diagnostics==true end,version=version,runtime=jit.os..' '..jit.arch}
   jobs.logger=shared.core.logger
-  shared.core.oncredentials=function(c)if not privateJSON(shared.settings_dir..'/gdriveshelf-credentials.json',c)then message(tr("Could not save refreshed credentials"))end end
+  if not credentials.refresh_token then core.auth_error=true end
+  core.oncredentials=function(c)
+   if shared.core~=core or core.retired then return end
+   if not c.account_id then c.local_cache_account=account end
+   if not privateJSON(shared.settings_dir..'/gdriveshelf-credentials.json',c)then message(tr("Could not save refreshed credentials"))end
+  end
   local BookList=require('ui/widget/booklist')
   shared.core.natural=Library.nativeComparator(BookList.collates.natural)
  end
@@ -118,7 +149,18 @@ function Shelf:init()
  self:onDispatcherRegisterActions()
  local core=self:getCore();local current=self:activeEntry()
  if current then core.active_id=current.id;core.opening_id=nil;self:installEndHook()end
- ui():nextTick(function()self:runAction(function()if not self.ui.tearing_down then core:resume();if current and self.settings.immediate then core:prefetch(current)end end end)end)
+ ui():nextTick(function()self:runAction(function()if not self.ui.tearing_down then core:resume();if current then
+  if self.settings.light_mode then
+   local doc=self.ui.doc_settings
+   local fraction=doc and doc.readSetting and tonumber(doc:readSetting('percent_finished'))
+   local page=doc and doc.readSetting and tonumber(doc:readSetting('last_page'))
+   if not fraction and page and self.ui.document and self.ui.document.getPageCount then
+    local pages=self.ui.document:getPageCount()
+    if pages and pages>0 then fraction=page/pages end
+   end
+   core:prefetch(current,fraction)
+  elseif self.settings.immediate then core:prefetch(current)end
+ end end end)end)
 end
 function Shelf:menu(title,rows,options)
  options=options or {};local Menu=require('ui/widget/menu');local Device=require('device');local menu
@@ -145,6 +187,13 @@ function Shelf:menu(title,rows,options)
    return require('ui/widget/container/centercontainer'):new{dimen=dimen,picture}
   end}
  end
+ if options.decorated and not options.grid then
+  local update=MenuClass.updateItems
+  MenuClass=MenuClass:extend{updateItems=function(m,...)
+   update(m,...)
+   require('gdriveshelf/browser').decorateList(m)
+  end}
+ end
  if options.parent_enabled~=nil then
   local update=MenuClass.updatePageInfo
   MenuClass=MenuClass:extend{updatePageInfo=function(m,...)
@@ -152,11 +201,13 @@ function Shelf:menu(title,rows,options)
    if m.page_return_arrow then m.page_return_arrow:showHide(options.parent_enabled);m.page_return_arrow:enableDisable(options.parent_enabled)end
   end}
  end
+ local origin=self.core
  local top=ui().getTopmostVisibleWidget and ui():getTopmostVisibleWidget()
  local nested=not options.header and (options.back or (top and top._shelf_menu))
  local function closed()
   if menu._closed then return end
   menu._closed=true
+  if self._shelf_menus then self._shelf_menus[menu]=nil end
   if self.folder_menu==menu then
    self.folder_menu=nil
    if not self.replacing_folder and self.core and self.core.cancelProgress then self.core:cancelProgress()end
@@ -168,14 +219,16 @@ function Shelf:menu(title,rows,options)
   title_bar_left_icon=nested and 'chevron.left' or nil,close_callback=closed}
  if options.header and options.header.bindMenu then options.header:bindMenu(menu)end
  menu._shelf_menu=true
+ self._shelf_menus=self._shelf_menus or setmetatable({},{__mode='k'})
+ self._shelf_menus[menu]=true
  local onCloseWidget=menu.onCloseWidget
  menu.onCloseWidget=function(m,...)
   if onCloseWidget then onCloseWidget(m,...)end
   closed()
  end
  if nested then menu.onLeftButtonTap=function(m)m:onCloseAllMenus();return true end end
- menu.onMenuSelect=function(_,item)if item.callback and item.select_enabled~=false then self:runAction(item.callback)end;return true end
- menu.onMenuHold=function(_,item)if item.hold_callback then self:runAction(item.hold_callback)end;return true end
+ menu.onMenuSelect=function(_,item)if self.core==origin and not(origin and origin.retired)and item.callback and item.select_enabled~=false then self:runAction(item.callback)end;return true end
+ menu.onMenuHold=function(_,item)if self.core==origin and not(origin and origin.retired)and item.hold_callback then self:runAction(item.hold_callback)end;return true end
  menu._shelf_lazy=options.lazy
  if options.lazy then
   local original=menu.onGotoPage
@@ -213,6 +266,7 @@ function Shelf:visibleProgress(menu)
  elseif self.core.cancelProgress and (not self.core.progress_job or not self.core.progress_job.mode or self.core.progress_job.mode=='visible')then self.core:cancelProgress()end
 end
 function Shelf:hasCredentials()
+ if self.core and self.core.retired then return false end
  local c=self.core and self.core.credentials or {}
  for _,key in ipairs{'client_id','refresh_token','access_token'}do if type(c[key])~='string'or c[key]==''then return false end end
  return true
@@ -267,14 +321,6 @@ function Shelf:offlineChildren(parent)
  for _,e in ipairs(files)do result[#result+1]=e end
  return result
 end
-function Shelf:showOffline()
- local rows={}
- for _,folder in ipairs(self:orderedEntries(self:offlineChildren(nil)))do
-  local e=folder;rows[#rows+1]={text=e.name..(e.author and e.author~=''and ' · '..e.author or ''),icon='appbar.filebrowser',icon_file=e.cover_path,cover=e.cover_path~=nil,folder_progress=e.folder_progress,callback=function()self:showFolder(e.id,true)end}
- end
- if #rows==0 then rows={{text=tr("No downloaded files"),select_enabled=false}}end
- self:menu(tr("Available offline — folders"),rows,{icons=true,perpage=8,multiline=true})
-end
 function Shelf:showFileSort()
  local labels={natural=tr("Natural name order"),name=tr("Name"),size=tr("Size"),date=tr("Modified date")}
  local menu
@@ -289,16 +335,6 @@ function Shelf:showFileSort()
  end
  rows[#rows+1]={text=(self.settings.reverse and '✓ 'or '○ ')..tr("Reverse order"),callback=function()self.settings.reverse=not self.settings.reverse;refresh()end}
  menu=self:menu(tr("File sorting"),rows)
-end
-function Shelf:removeTree(parent)
- local ids,total={},0
- for id,e in pairs(self.core.state.entries)do
-  if e.pool=='auto' or e.pool=='offline'then
-   local p=e.parent_id;local seen={}
-   while p and not seen[p]do if p==parent then ids[#ids+1]=id;total=total+(e.size or 0);break end;seen[p]=true;local f=self.core.state.folders[p];p=f and f.parent_id end
-  end
- end
- ui():show(self:confirmation{text=F("Remove %d local downloads (%s)?\nReading progress and pending sync will be kept.",#ids,bytes(total)),ok_text=tr("Remove"),ok_callback=function()for _,id in ipairs(ids)do self.core:removeFile(id)end;self:onCoreChange('cleared')end})
 end
 function Shelf:activeEntry()
  local path=self.ui and self.ui.document and self.ui.document.file
@@ -345,10 +381,25 @@ function Shelf:openDownloadedEntry(entry,resume,path,e)
   self._end_dialog=nil
   if not path then problem(e);return end
   local DocSettings=require('docsettings')
+  local cached=(self.core.state.entries or {})[entry.id]
+  local hasNative=DocSettings:hasSidecarFile(path)
   local pending=self.core.state.sync.pending[entry.id]
-  if not DocSettings:hasSidecarFile(path) and (not pending or pending.status_only)then
-   local remote=self.core:remote(entry)
-   if remote then self:applyRemote(entry,remote,path,pending and pending.status_only)end
+  local remote=self.core.remote and self.core:remote(entry)
+  local deferred=self.core.state.sync.deferred and self.core.state.sync.deferred[entry.id]
+  local knownBase=self.core.state.sync.bases and self.core.state.sync.bases[entry.id]
+  local canStage=not pending or (pending.status_only and not hasNative)
+  local syncEnabled=not self.core.settings or self.core.settings.sync_enabled~=false
+  if syncEnabled and cached and sameBook(cached,entry) and self.core.stageRemoteProgress
+    and (deferred or (canStage and (remote or (not hasNative and knownBase))))then
+   local native=hasNative and DocSettings:open(path).data or nil
+   local record,why=self.core:deferredProgress(entry,native,remote)
+   if not deferred and not record and not why then record,why=self.core:stageRemoteProgress(entry,remote,native)end
+   if record then
+    local ok
+    ok,why=self:applyRemote(entry,record,path,true)
+    if ok then ok,why=self.core:completeDeferredProgress(entry,record)end
+   end
+   if why and (type(why)~='table' or why.code~='conflict') then problem(why)end
   end
   local marked,err=self:writeChapterMark(entry,path)
   if not marked then problem(err)end
@@ -356,7 +407,7 @@ function Shelf:openDownloadedEntry(entry,resume,path,e)
   self.core.active_id=entry.id;self.core.opening_id=nil
   self.core:recordOpen(entry)
   if self.ui.document then self.ui:switchDocument(path)else require('apps/reader/readerui'):showReader(path)end
-  if resume then self.core:prefetch(entry)end
+  if resume and not (self.settings and self.settings.light_mode) then self.core:prefetch(entry)end
 end
 function Shelf:openEntry(entry,resume)
  self.core:open(entry,function(path,err)self:openDownloadedEntry(entry,resume,path,err)end)
@@ -375,7 +426,7 @@ function Shelf:fileActions(entry)
   end},
   {icon='close',text=tr("Remove local download"),select_enabled=cached~=nil,callback=function()
    close()
-   ui():show(self:confirmation{text=tr("Remove the local file? Reading progress will be kept."),ok_text=tr("Remove"),ok_callback=function()local ok,e=self.core:removeFile(entry.id);if not ok then problem(e)end end})
+   if cached then self:confirmManagedRemoval({{id=entry.id,path=cached.path,pool=cached.pool,size=cached.size}})end
   end},
   {icon='bookmark',text=tr(read and "Mark as unread" or "Mark as read"),select_enabled=supported,callback=function()
    local active=self:activeEntry()
@@ -392,45 +443,44 @@ function Shelf:fileActions(entry)
   {icon='bookmark',text=tr("Recover reading progress"),select_enabled=supported,callback=function()close();self:showRecovery(entry)end},
   {icon='info',text=tr("Information"),callback=function()close();self:showInfo(entry.parent_id)end},
  }
+ if self.settings and self.settings.beta_quick_preview and entry.name:lower():match('%.cbz$') then
+  table.insert(rows,2,{icon='appbar.pageview',text=tr('Quick CBZ preview'),callback=function()close();self:showQuickPreview(entry)end})
+ end
+ if self.core.state and self.core.state.sync and self.core.state.sync.conflicts[entry.id] then
+  table.insert(rows,2,{icon='notice-warning',text=tr('Compare progress versions'),callback=function()close();self:showConflict(entry)end})
+ end
  menu=self:menu(entry.name,rows,{icons=true,multiline=true});return menu
 end
 function Shelf:showInfo(parent)
  local info=self.core:titleInfo(parent);local text={info.title or parent}
  for _,key in ipairs{'author','status','tags','publisher','year','description'}do if info[key]and info[key]~=''then text[#text+1]=tostring(info[key])end end
  local folder=self.core.state.folders[parent]or{id=parent,name=info.title or parent,is_folder=true}
- local buttons={{{text=tr("Edit folder information"),callback=function()self:editFolderMetadata(folder)end}}}
- if info.cover_path then buttons[#buttons+1]={{text=tr("Cover"),callback=function()ui():show(require('ui/widget/imageviewer'):new{file=info.cover_path,title_text=info.title or tr("Cover"),with_title_bar=true})end}}end
- ui():show(require('ui/widget/textviewer'):new{title=tr("Information"),text=table.concat(text,'\n\n'),buttons_table=#buttons>0 and buttons or nil,add_default_buttons=true})
-end
-function Shelf:showMemory()
- local usage=self.core:cache():usage();local storage=self.core.storage
- local sdr=storage:treeSize(storage.root..'/snapshots')
- local function nativeSize(path)
-  if storage.lfs.attributes(path,'mode')~='directory'then return 0 end
-  local sum=0;for name in storage.lfs.dir(path)do if name~='.'and name~='..'then local p=path..'/'..name;local a=storage.lfs.symlinkattributes(p);if a and a.mode=='directory'then if name:match('%.sdr$')then sum=sum+storage:treeSize(p)else sum=sum+nativeSize(p)end end end end;return sum
+ local function edit()self:editFolderMetadata(folder)end
+ local function full()
+  ui():show(require('ui/widget/textviewer'):new{title=tr("Information"),text=table.concat(text,'\n\n'),
+   buttons_table={{{text=tr("Edit folder information"),callback=edit}}},add_default_buttons=true})
  end
- local counted={}
- local ok,DocSettings=pcall(require,'docsettings')
- if ok and DocSettings.getSidecarDir then
-  for id,entry in pairs(self.core.state.docs or {})do
-   local path=(self.core.state.entries[id]or{}).path or entry.local_path
-   if path and Library.supported(entry)then for _,location in ipairs{'doc','dir','hash'}do
-    local good,dir=pcall(DocSettings.getSidecarDir,DocSettings,path,location)
-    if good and dir and not counted[dir]then counted[dir]=true;sdr=sdr+storage:treeSize(dir)end
-   end end
-  end
- else sdr=sdr+nativeSize(storage.books_dir or storage.root..'/Books')end
- local rows={{text=F("Free disk space: %s",bytes(storage:freeBytes())),select_enabled=false},
- {text=tr("Safety reserve: 512 MiB · active files are protected"),select_enabled=false},
- {text=F("Progress and snapshots: %s · index and queue: %s",bytes(sdr),bytes(storage:size(self.core.index_path))),select_enabled=false}}
- for _,pool in ipairs{'auto','offline','meta'}do
-  local p=pool;local label=({auto=tr("Temporary reading cache"),offline=tr("Offline downloads"),meta=tr("Covers, listings and metadata")})[p]
-  rows[#rows+1]={text=label..': '..bytes(usage[p])..tr(" · clear"),callback=function()
-   ui():show(self:confirmation{text=F("Clear “%s” (%s)?\nOpen files, reading progress and pending sync will be kept.",label,bytes(usage[p])),ok_text=tr("Clear"),ok_callback=function()self.core:clearPool(p);self:showMemory()end})
-  end}
+ if not info.cover_path then return full()end
+ local dialog
+ local function image()
+  ui():show(require('ui/widget/imageviewer'):new{file=info.cover_path,title_text=info.title or tr("Cover"),with_title_bar=true})
  end
- rows[#rows+1]={text=F("Cache location: %s",storage.root),select_enabled=false}
- self:menu(tr("Storage and cache"),rows)
+ dialog=require('ui/widget/buttondialog'):new{title=info.title or tr("Information"),buttons={
+  {{text=tr("Cover"),callback=image},{text=tr("Full information"),callback=function()ui():close(dialog);full()end}},
+  {{text=tr("Close"),callback=function()ui():close(dialog)end},{text=tr("Edit folder information"),callback=function()ui():close(dialog);edit()end}},
+ }}
+ local screen=require('device').screen
+ local height=math.floor(math.min(screen:scaleBySize(165),screen:getHeight()*.24))
+ local width=math.floor(height*.72)
+ local gap=screen:scaleBySize(10)
+ dialog:addWidget(require('ui/widget/horizontalgroup'):new{align='top',not_focusable=true,
+  require('ui/widget/iconwidget'):new{file=info.cover_path,width=width,height=height,is_icon=false,scale_factor=0},
+  require('ui/widget/horizontalspan'):new{width=gap},
+  require('ui/widget/textboxwidget'):new{text=table.concat(text,'\n'),width=dialog:getAddedWidgetAvailableWidth()-width-gap,height=height,
+   face=require('ui/font'):getFace('smallinfofont'),height_adjust=true,height_overflow_show_ellipsis=true},
+ })
+ ui():show(dialog)
+ return dialog
 end
 function Shelf:showQueue()
  local rows={{text=tr("Retry pending tasks"),callback=function()self.core.retry_after=nil;self.core:resume();self.core.jobs:pump();message(tr("Retry started"))end}}
@@ -447,35 +497,82 @@ function Shelf:showQueue()
  for id,conflict in pairs(self.core.state.sync.conflicts)do if not self.core.state.sync.pending[id]then local e=self.core.state.docs[id];if e then rows[#rows+1]={text=tr("Conflict: ")..e.name,callback=function()self:showConflict(e)end}end end end
  self:menu(tr("Downloads and sync"),rows)
 end
-function Shelf:showConflict(entry)
- local saved=self.core.state.sync.conflicts[entry.id]
- if not saved then message(tr("The local snapshot is waiting to sync. Both versions are checked before writing."));return end
- local function inspect(text,title)ui():show(require('ui/widget/textviewer'):new{title=title,text=text or tr("No version available")})end
- self:menu(tr("Conflict: ")..entry.name,{
-  {text=tr("View local version"),callback=function()inspect(saved.local_lua,tr("Local progress"))end},
-  {text=tr("View cloud version"),callback=function()inspect(saved.remote_lua,tr("Cloud progress"))end},
-  {text=tr("Use local version"),callback=function()
-   ui():show(self:confirmation{text=tr("Upload local progress? The cloud version has been preserved and will be checked again."),ok_text=tr("Local"),ok_callback=function()
-    local archived=self:archiveConflict(entry,saved);if not archived then message(tr("Could not preserve both conflict versions"));return end;local result,e=self.core:sync():resolve(entry.id,'local');if not result then problem(e);return end;self.core:save();self.core:flushPending();message(tr("Local version queued for sync"))
-   end})
-  end},
-  {text=tr("Use cloud version"),callback=function()
-   local cached=self.core:cached(entry.id);if not cached then message(tr("Download the book first"));return end
-   ui():show(self:confirmation{text=tr("Restore cloud progress locally? Close the book before applying it."),ok_text=tr("Cloud"),ok_callback=function()
-    if not self:archiveConflict(entry,saved)then message(tr("Could not preserve both conflict versions"));return end
-    local ok,e=self:applyRemote(entry,{lua=saved.remote_lua,stamp=saved.stamp,book_stamp=saved.book_stamp},cached.path,true)
-    if not ok then problem(e);return end
-    local result;result,e=self.core:sync():resolve(entry.id,'remote');if not result then problem(e);return end
-    self.core:chapterCloudResolved(entry,result)
-    local savedOk,saveError=self.core:save()
-    if not savedOk then problem(saveError);return end
-    self.core:emit('progress',entry);message(tr("Cloud version applied. Reopen the book."))
-   end})
-  end},
- })
+function Shelf:actionNotification(text,action)
+ local notice=require('ui/widget/notification'):new{text=text,timeout=6,toast=false}
+ notice.onTapClose=function(owner,_,gesture)
+  local inside=gesture and owner.frame and owner.frame.dimen and not gesture.pos:notIntersectWith(owner.frame.dimen)
+  ui():close(owner)
+  if inside then ui():nextTick(function()self:runAction(action)end);return true end
+  return false
+ end
+ ui():show(self:trackAccountWidget(notice))
 end
-function Shelf:archiveConflict(entry,saved)
- return self.core.storage:writeJSON(self.core.storage.root..'/snapshots/'..Storage.key(entry.id)..'-conflict-'..os.time()..'.json',saved)
+function Shelf:progressEntryLabel(entry)
+ local folder=(self.core.state.folders or {})[entry.parent_id]
+ return (folder and folder.name and folder.name..' / 'or '')..entry.name
+end
+function Shelf:notifyProgressConflict(entry)
+ local core=self.core
+ local saved=core.state.sync.conflicts[entry.id]
+ if not saved then return end
+ core.conflict_notified=core.conflict_notified or {}
+ if core.conflict_notified[entry.id]==saved then return end
+ core.conflict_notified[entry.id]=saved
+ self:actionNotification(F("Compare progress · %s",self:progressEntryLabel(entry)),function()
+  if self.core==core and core.state.sync.conflicts[entry.id]then self:showConflict(entry)end
+ end)
+end
+function Shelf:notifyProgressSynced(entry)
+ local core=self.core
+ if core.conflict_notified then core.conflict_notified[entry.id]=nil end
+ core.synced_notice=core.synced_notice or {}
+ if core.synced_notice[entry.id]==os.time()then return end
+ core.synced_notice[entry.id]=os.time()
+ require('ui/widget/notification'):notify(F("Progress synced · %s",self:progressEntryLabel(entry)),require('ui/widget/notification').SOURCE_ALWAYS_SHOW)
+end
+function Shelf:showConflict(entry)
+ local core=self.core
+ local saved=core.state.sync.conflicts[entry.id]
+ if not saved then message(tr("The local snapshot is waiting to sync. Both versions are checked before writing."));return end
+ local description=SDR.describeConflict(saved)
+ local function describe(version,label)
+  local lines={tr(label)}
+  if version.page then lines[#lines+1]=F("Page %d",math.floor(version.page))end
+  if version.percent then lines[#lines+1]=string.format('%d%%',math.floor(version.percent*100+.5))end
+  if version.status then lines[#lines+1]=tr(({complete='Read',reading='Reading',abandoned='Abandoned',new='Unread'})[version.status] or 'unknown')end
+  if version.date then lines[#lines+1]=version.date:gsub('T',' '):gsub('Z$',' UTC')end
+  if #lines==1 then lines[2]=tr("No verified reading position")end
+  return table.concat(lines,' · ')
+ end
+ local differences={}
+ local categories={annotations='Bookmarks or annotations',status='Reading status',settings='Book settings',position='Reading position'}
+ for _,key in ipairs(description.differences or {})do
+  differences[#differences+1]=tr(categories[key] or 'Unknown difference')
+ end
+ local title=self:progressEntryLabel(entry)
+ local rows={
+  {text=describe(description.local_version or {},'Local version'),select_enabled=false},
+  {text=describe(description.remote_version or {},'Cloud version'),select_enabled=false},
+ }
+ if #differences>0 then rows[#rows+1]={text=tr("Differences")..' · '..table.concat(differences,', '),select_enabled=false}end
+ local comparison
+ local function choose(choice)
+  ui():show(self:confirmation{text=tr(choice=='local' and "Use the local version? Both versions will be kept." or "Use the cloud version? Both versions will be kept."),
+   ok_text=tr("Apply"),ok_callback=function()
+    if self.core~=core then return end
+    local intent,why=core:resolveProgressConflict(entry,choice,saved)
+    if not intent then problem(why);return end
+    comparison:onCloseAllMenus()
+    if self.queue_menu and not self.queue_menu._closed then self:showQueue()end
+    message(tr(choice=='local'and "Local version queued for sync"or "Cloud version queued for verification"))
+   end})
+ end
+ if saved.reason=='book_changed'then
+  rows[#rows+1]={text=tr('The document changed. Both versions were kept.'),select_enabled=false}
+ else rows[#rows+1]={text=tr('Use local version'),select_enabled=saved.local_lua~=nil,callback=function()choose('local')end}end
+ if saved.remote_lua then rows[#rows+1]={text=tr('Use cloud version'),callback=function()choose('remote')end}end
+ comparison=self:menu(title,rows,{multiline=true,perpage=6})
+ return comparison
 end
 function Shelf:snapshotCurrent()
  local entry=self:activeEntry();if not entry or not self.ui.doc_settings then return end
@@ -495,11 +592,17 @@ function Shelf:restoreSnapshot(entry)
 end
 function Shelf:input(title,current,callback,input_type)
  local dialog
+ local core=self.core
  dialog=require('ui/widget/inputdialog'):new{title=title,input=tostring(current or ''),input_type=input_type,buttons={{
   {text=tr("Cancel"),callback=function()ui():close(dialog)end},
-  {text=tr("Save"),is_enter_default=true,callback=function()self:runAction(function()local text=dialog:getInputText();local ok,e=callback(text);if ok~=false then ui():close(dialog)else problem(e)end end)end},
+  {text=tr("Save"),is_enter_default=true,callback=function()
+   if core and (self.core~=core or core.retired)then ui():close(dialog);return end
+   dialog._shelf_running=true
+   self:runAction(function()local text=dialog:getInputText();local ok,e=callback(text);if ok~=false then ui():close(dialog)else problem(e)end end)
+   dialog._shelf_running=nil
+  end},
  }}}
- ui():show(dialog);dialog:onShowKeyboard()
+ ui():show(self:trackAccountWidget(dialog));dialog:onShowKeyboard()
 end
 function Shelf:pickCredentials()
  local chooser;local path=self.settings.import_dir
@@ -523,20 +626,97 @@ function Shelf:pickCredentialsByPath()
 end
 function Shelf:onCredentialsImported()
  if self.connection_menu then ui():close(self.connection_menu);self.connection_menu=nil end
+ if self.connection_settings and not self.connection_settings._closed then ui():close(self.connection_settings)end
  message(tr("Credentials imported"));self:showLibrary()
 end
+function Shelf:pauseAccount(core)
+ if self.core~=core then return false,tr('Account could not be verified')end
+ if core.archive_removal or core.relocating then return false,tr('Wait for the current storage operation to finish.')end
+ if core.retired then return true end
+ if core.active_id or self:activeEntry() then return false,tr('Close the book before switching accounts')end
+ core.retired=true
+ core.jobs.hold=true
+ if core.retry_tick and core.jobs.unschedule then core.jobs.unschedule(core.retry_tick)end
+ if shared.requests and shared.requests.core==core then shared.requests:cancel(false);shared.requests=nil end
+ local manager=ui()
+ for owner in pairs(shared.owners)do
+  if owner.closeQuickPreview then owner:closeQuickPreview()end
+  local tracked=owner._account_widgets or {}
+  local menus=owner._shelf_menus or {}
+  local closed={}
+  for i=#(manager._window_stack or {}),1,-1 do
+   local record=manager._window_stack[i]
+   local widget=record and record.widget
+   if widget and (menus[widget]or tracked[widget]==core)and not widget._shelf_running then
+    closed[widget]=true;tracked[widget]=nil
+    manager:close(widget)
+   end
+  end
+  for _,key in ipairs{'folder_menu','queue_menu','memory_menu','connection_settings','download_dialog','cover_download','metadata_editor','index_dialog'}do
+   local item=owner[key]
+   local widget=item and (item.widget or item)
+   if widget and not widget._closed and not closed[widget]then manager:close(widget)end
+   owner[key]=nil
+  end
+ end
+ if core.quick_preview_session then core.quick_preview_session:close()end
+ if core.cover_gallery_session then core.cover_gallery_session:close()end
+ core:cancelIndex(false)
+ core.jobs:clear({code='cancelled',message='Account session closed',silent=true})
+ core.oncredentials=nil
+ return true
+end
+function Shelf:reconnectPausedAccount(core)
+ if self.core~=core or not core.retired then return end
+ shared.core=nil
+ core.credentials={}
+ for owner in pairs(shared.owners)do owner.core=nil end
+ self.core=nil
+ local current=self:getCore()
+ current:resume()
+ return current
+end
+function Shelf:signOutAccount(core)
+ local ok,err=self:pauseAccount(core)
+ if not ok then return false,err end
+ local path=shared.settings_dir..'/gdriveshelf-credentials.json'
+ local lfs=core.storage.lfs
+ for _,file in ipairs{path..'.new',path}do
+  if lfs.symlinkattributes(file)and not os.remove(file)then
+   self:reconnectPausedAccount(core)
+   return false,tr('Could not remove local authorization')
+  end
+ end
+ self:reconnectPausedAccount(core)
+ return true
+end
 function Shelf:importCredentials(path)
- local credentials=self.core.storage:readJSON(path)
+ local credentials=self.core.storage:readJSON(path,1048576)
  if type(credentials)~='table'then return false,tr("Could not read authorization JSON. Check the file path and KOReader's storage permission.")end
  if credentials.installed or credentials.web then return false,tr("This is an OAuth client JSON. Run gdriveshelf-authorize.py on your computer first, then import the resulting gdriveshelf-credentials.json.")end
- for _,key in ipairs{'refresh_token','client_id','access_token'}do if type(credentials[key])~='string'or credentials[key]==''then return false,tr("Select the JSON file created by tools/authorize.py")end end
+ for _,key in ipairs{'refresh_token','client_id','access_token'}do
+  local value=credentials[key]
+  if type(value)~='string'or value==''or #value>8192 or value:find('[%c]')then
+   return false,tr("Select the JSON file created by tools/authorize.py")
+  end
+ end
+ if credentials.account_id and (type(credentials.account_id)~='string'or #credentials.account_id>100
+   or not credentials.account_id:match('^[%w_-]+$'))then return false,tr("Account could not be verified")end
  if credentials.scope and credentials.scope~='https://www.googleapis.com/auth/drive'then return false,tr("Full Google Drive access is required")end
- if self.core.active_id then return false,tr("Close the book before switching accounts")end
- if not privateJSON(shared.settings_dir..'/gdriveshelf-credentials.json',credentials)then return false,tr("Could not securely save credentials")end
- if shared.core then shared.core.jobs:clear()end
- shared.core=nil
- for owner in pairs(shared.owners)do owner.core=nil end
- self.core=self:getCore();self.settings.import_dir=path:match('^(.*)/')or '/';self:saveSettings();return true
+ local core=self.core
+ -- The cache marker is private to the installed credential copy.
+ credentials.local_cache_account=nil
+ if not credentials.account_id and core.credentials.refresh_token==credentials.refresh_token then
+  credentials.local_cache_account=core.credentials.local_cache_account
+ end
+ local ready,why=self:pauseAccount(core)
+ if not ready then return false,why end
+ if not privateJSON(shared.settings_dir..'/gdriveshelf-credentials.json',credentials)then
+  self:reconnectPausedAccount(core)
+  return false,tr("Could not securely save credentials")
+ end
+ self:reconnectPausedAccount(core)
+ self.settings.import_dir=path:match('^(.*)/')or '/';self:saveSettings();return true
 end
 function Shelf:showAbout()
  local size=require('device').screen:scaleBySize(100)
@@ -553,6 +733,7 @@ function Shelf:onSaveSettings()
 end
 function Shelf:onFlushSettings()self:onSaveSettings()end
 function Shelf:onCloseDocument()
+ self:clearReaderTransfer()
  -- ReaderUI may defer its native SaveSettings until after CloseDocument.
  -- Flush native module state first so the final snapshot includes this page.
  if self.ui.saveSettings then self.ui:saveSettings()end
@@ -563,7 +744,7 @@ function Shelf:onPageUpdate(page)
  local entry=self:activeEntry();if not entry then return end
  local pages=self.ui.document:getPageCount()
  local percent=pages and pages>0 and (tonumber(page)or 0)/pages or 0
- if self.settings.immediate or percent*100>=(self.settings.threshold or 75)then self.core:prefetch(entry)end
+ if self.settings.light_mode or self.settings.immediate or percent*100>=(self.settings.threshold or 75)then self.core:prefetch(entry,percent)end
 end
 function Shelf:installEndHook()
  local status=self.ui.status;if not status or self._native_end then return end
@@ -611,4 +792,6 @@ function Shelf:onSuspend()if self.core then self.core:suspend()end end
 function Shelf:onResume()if self.core then self.core:wake()end end
 require('gdriveshelf/ux')(Shelf,{shared=shared,root=pluginRoot,bytes=bytes,binaryBytes=binaryBytes,message=message,problem=problem})
 require('gdriveshelf/controls')(Shelf,{shared=shared,root=pluginRoot,bytes=bytes,message=message,problem=problem})
+require('gdriveshelf/preview').install(Shelf,{shared=shared,root=pluginRoot,bytes=bytes,message=message,problem=problem})
+Manage.install(Shelf,{root=pluginRoot,bytes=bytes,binaryBytes=binaryBytes,message=message,problem=problem})
 return Shelf

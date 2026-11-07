@@ -23,7 +23,8 @@ function T.dimensions(s)
   elseif tag=='VP8 'and s:sub(24,26)=='\157\1\42'then local a,b=number(s,27,2),number(s,29,2);if a and b then w,h=bit.band(a,16383),bit.band(b,16383)end
   elseif tag=='VP8L'and s:byte(21)==47 then local x=number(s,22,4);if x then w=bit.band(x,16383)+1;h=bit.band(bit.rshift(x,14),16383)+1 end end
  end
- if not w or not h or w<1 or h<1 or w*h>16000000 then return nil end
+ if not w or not h or w<1 or h<1 then return nil,nil,'preview_format' end
+ if w*h>16000000 then return nil,nil,'preview_limit' end
  return w,h
 end
 function T.build(entry,cached,provider,path)
@@ -41,7 +42,8 @@ function T.build(entry,cached,provider,path)
  local result,err=T.render(data,path);if result then result.range_bytes=fetched end;return result,err
 end
 function T.render(data,path,max_w,max_h)
- local w,h=T.dimensions(data);if not w then return nil,{code='preview',message='Unsupported or oversized cover image'}end
+ local w,h,code=T.dimensions(data)
+ if not w then return nil,{code=code,message=code=='preview_limit'and 'Image exceeds the preview pixel limit' or 'Unsupported or damaged preview image'}end
  local scale=math.min((max_w or 320)/w,(max_h or 440)/h,1)
  local ok,bb=pcall(function()return require('ui/renderimage'):renderImageData(data,#data,false,math.max(1,math.floor(w*scale)),math.max(1,math.floor(h*scale)))end)
  if not ok or not bb then return nil,{code='preview',message='Cannot render cover image'}end

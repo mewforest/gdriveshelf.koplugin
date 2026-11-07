@@ -80,3 +80,21 @@ H.test('home shortcut explicitly resets the page and keeps the home folder',func
  end
  p:showLibrary(true)
 end)
+H.test('list-to-grid restores the page containing the visible resume chapter',function()
+ local p=instance()
+ local rows={}
+ for i=1,42 do rows[i]={entry={id='chapter-'..i}} end
+ p.folder_visit={resume={entry={id='chapter-29'}}}
+ local anchor=p:folderAnchor{page=5,perpage=7,item_table=rows}
+ H.eq(anchor.id,'chapter-29')
+ local grid={page=1,perpage=6,page_num=7,item_table=rows,onGotoPage=function(menu,page)menu.page=page end}
+ p:restoreFolderAnchor(grid,anchor)
+ H.eq(grid.page,5)
+end)
+H.test('root and ZIP alone do not generate a comic header, while user overrides do',function()
+ local p=instance()
+ assert(not p:browserPresentation('root',{{id='a',name='1.cbz',parent_id='root'}}).header)
+ assert(not p:browserPresentation('p',{{id='b',name='backup.zip',parent_id='p'}}).header)
+ p.core.state.folder_types.root='comics'
+ assert(p:browserPresentation('root',{{id='a',name='1.cbz',parent_id='root'}}).header)
+end)

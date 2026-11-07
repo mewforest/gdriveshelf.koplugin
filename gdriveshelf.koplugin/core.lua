@@ -40,6 +40,7 @@ end
 function Core:save()return self.storage:writeJSON(self.index_path,self.state)end
 function Core:emit(kind,entry,err)if self.onchange then self.onchange(kind,entry,err)end end
 function Core:networkState()
+ if self.retired then return 'auth'end
  if self.settings.offline then return 'offline'end
  if self.sleeping then return 'sleep'end
  if self.auth_error then return 'auth'end
@@ -104,11 +105,13 @@ function Core:sync(provider)
  return Sync.new{provider=provider or {},sdr=SDR,storage=self.storage,state=self.state.sync,offline=self.settings.offline}
 end
 function Core:network(key,work,done,front,before,progress,local_task,options)
+ if self.retired then return false end
  if not local_task and not self:online()then return false end
  self.jobs.logger=self.logger;self:syncNetworkJobs()
  local attempts=0
  local job_options={timeout=options and options.timeout,automatic=options and options.automatic}
  job_options.retry=function(envelope,err)
+  if self.retired then return false end
   if self.logger and envelope and type(envelope.trace)=='table'then
    for i=1,math.min(128,#envelope.trace)do pcall(self.logger.event,self.logger,'request',envelope.trace[i])end
   end
@@ -151,6 +154,7 @@ function Core:network(key,work,done,front,before,progress,local_task,options)
   if value and type(value)=='table' then value.data=nil end -- Native SDR survives JSON transport as Lua literals.
   return {result=value,credentials=p.credentials,trace=trace},err
  end,function(envelope,err)
+  if self.retired then return end
   local result=envelope and envelope.result
   if done then if result then done(result)else done(nil,err or errorValue('network','Network request failed'))end end
  end,front,function()
@@ -241,12 +245,14 @@ function Core:folder(parent,name,callback,force)
  local listing=self.state.listings[parent]
  local cached=self:cachedList(parent);if listing or #cached>0 or not self:online()then callback(cached,true)end
  if not self:online()then return false end
- if self.settings.light_mode and not force and listing and listing.complete and os.time()-(listing.checked_at or 0)<LIGHT_LIST_TTL then
+ local ttl=self.settings.light_mode and LIGHT_LIST_TTL or 30
+ if not force and listing and listing.complete and not listing.dirty and os.time()-(listing.checked_at or 0)<ttl then
   self:metadata(cached,true)
+  if not self.settings.light_mode then self:indexHome(false)end
   return false
  end
  self.folder_waiters=self.folder_waiters or {};self.folder_waiters[parent]=self.folder_waiters[parent]or{}
- self.folder_force=self.folder_force or {};self.folder_force[parent]=force or self.folder_force[parent]
+ self.folder_force=self.folder_force or {};self.folder_force[parent]=(force=='home' or self.folder_force[parent]=='home') and 'home' or force or self.folder_force[parent]
  self.folder_waiters[parent][#self.folder_waiters[parent]+1]=callback
  self:network('list:'..parent,function(p)return p:list(parent)end,function(entries,err)
   local explicit=self.folder_force[parent];self.folder_force[parent]=nil
@@ -259,7 +265,7 @@ function Core:folder(parent,name,callback,force)
   if explicit or not self.settings.light_mode then self:flushPending(explicit)end
   if explicit and self.flushMetadata then self:flushMetadata()end
   if current then
-   self:indexHome(explicit and parent==self.settings.home)
+   if not explicit or explicit=='home'then self:indexHome(explicit=='home' and parent==self.settings.home)end
    if parent==self.settings.home and self.settings.beta_auto_scan then self:deepScan({id=parent},true)end
   end
  end,true)
@@ -312,8 +318,8 @@ function Core:metadata(entries,explicit)
  end
  self:coverMetadata(entries,explicit)
 end
-function Core:download(entry,pool,callback,automatic)
- if self.settings.light_mode and automatic then return false end
+function Core:download(entry,pool,callback,automatic,light_prefetch)
+ if self.settings.light_mode and automatic and not(light_prefetch and (self.settings.light_prefetch or 0)>0)then return false end
  self:stopRelocation()
  local old=self:cached(entry.id)
  local image=pool=='meta'and Metadata.isImageName(entry.name)
@@ -328,8 +334,9 @@ function Core:download(entry,pool,callback,automatic)
  if wanted then
   if pool=='offline'and wanted.pool~='offline'then wanted.pool='offline';changed=true end
   if not automatic and wanted.automatic~=false then wanted.automatic=false;changed=true end
+  if light_prefetch and not wanted.light_prefetch then wanted.light_prefetch=true;changed=true end
   if wanted.entry~=entry then wanted.entry=entry;changed=true end
- else self.state.downloads[entry.id]={entry=entry,pool=pool,automatic=automatic==true}end
+ else self.state.downloads[entry.id]={entry=entry,pool=pool,automatic=automatic==true,light_prefetch=light_prefetch or nil}end
  if changed then self:save()end
  if not wanted then self:emit('queued',entry)end
  if not self:online()then return false end
@@ -348,6 +355,8 @@ function Core:download(entry,pool,callback,automatic)
   local victims,err=self:cache():plan(request.pool,size,self:protected(),entry.id)
   if not victims then return nil,errorValue('space',err)end
   if #victims>0 then self:evict(victims)end
+  self.transfer=self.transfer or {}
+  self.transfer[entry.id]={received=0,total=size,started=os.time(),stage='download'}
   self.downloading_id=entry.id;self:emit('download',entry)
   return true
  end
@@ -401,7 +410,14 @@ function Core:download(entry,pool,callback,automatic)
    end
   end
  end,pool~='meta' and callback~=nil,before,function(value)
-  self.transfer=self.transfer or {};self.transfer[entry.id]=value;self:emit('transfer',entry)
+  self.transfer=self.transfer or {}
+  local last=self.transfer[entry.id]
+  if last and value.received<last.received then last=nil end
+  local now=os.time()
+  value.started=last and last.started or now
+  value.sampled=now
+  value.samples=(last and value.received>last.received and (last.samples or 0)+1) or (last and last.samples) or 0
+  self.transfer[entry.id]=value;self:emit('transfer',entry)
  end)
 end
 function Core:open(entry,callback)
@@ -428,11 +444,25 @@ function Core:open(entry,callback)
  self.jobs.hold=held
  if self.jobs.pump then self.jobs:pump()end
 end
-function Core:prefetch(entry)
- if self.settings.light_mode or not self:online()or (Catalog.kind(entry,self.state)=='books'and not self.settings.prefetch_books)then return end
+function Core:prefetch(entry,fraction)
+ if not self:online()then return end
+ local light=self.settings.light_mode
+ local allowBooks=not light and self.settings.prefetch_books
+ if not allowBooks and Catalog.kind(entry,self.state)=='books'then return end
+ local limit
+ if light then
+  limit=self.settings.light_prefetch or 0
+  if not fraction or fraction*100<(self.settings.light_threshold or 95)then return end
+ else limit=self.settings.prefetch or 1 end
+ limit=math.max(0,math.min(3,limit))
+ if limit==0 then return end
  local list=self:cachedList(entry.parent_id)
- for _,next_entry in ipairs(Library.next(list,entry.id,self.settings.prefetch or 1,self.settings.sort,self.settings.reverse,self.natural))do
-  if (self.settings.prefetch_books or Catalog.kind(next_entry,self.state)=='comics')and not self:cached(next_entry.id)then self:download(next_entry,'auto',nil,true)end
+ for _,next_entry in ipairs(Library.next(list,entry.id,limit,self.settings.sort,self.settings.reverse,self.natural))do
+  if (allowBooks or Catalog.kind(next_entry,self.state)=='comics')and not self:cached(next_entry.id)then
+   if not self.state.downloads[next_entry.id] or not self.jobs.keys or not self.jobs.keys['download:'..next_entry.id]then
+    self:download(next_entry,'auto',nil,true,light)
+   end
+  end
  end
 end
 function Core:next(entry)
@@ -475,35 +505,6 @@ function Core:titleInfo(parent)
  end
  return info
 end
-function Core:snapshot(entry,data)
- local p,e=self:sync():snapshot(entry,data)
- if not p then return nil,e end
- self.state.summaries[entry.id]=SDR.summary(data)
- local ok,err=self:save();if not ok then return nil,errorValue('disk',err)end
- if self.settings.sync_enabled then self:flushPending()end
- return p
-end
-function Core:flushPending(explicit)
- if not self.settings.sync_enabled or not self:online()or (self.settings.light_mode and not explicit)then return end
- for _,pending in ipairs(self:sync():pendingList())do
-  local entry=pending.entry
-  if not self.state.sync.conflicts[entry.id]then
-   self:network('sync:'..entry.id,function(provider)return self:sync(provider):push(entry,pending)end,function(result,err)
-    if result then
-     if result.action=='pull'then
-      -- A remote base is acknowledged only after native restoration succeeds.
-      result={action='conflict',conflict={reason='remote_updated',local_lua=pending.lua,remote_lua=result.lua,base_lua=pending.base_lua,stamp=result.stamp,book_stamp=result.book_stamp}}
-     end
-     self:sync():commit(entry,pending,result)
-     if self.chapterSyncCommitted then self:chapterSyncCommitted(entry,pending,result)end
-     if result.action=='conflict'then self:emit('conflict',entry)end
-     self:save()
-     if result.action~='conflict' and self.state.sync.pending[entry.id]then self:flushPending(explicit)end
-    elseif not(err and err.silent)then self:emit('sync_error',entry,err)end
-   end,false,nil,nil,false,{automatic=not explicit})
-  end
- end
-end
 function Core:lazyProgress(entries)
  if not self.settings.sync_enabled or not self:online()then return end
  for _,entry in ipairs(entries)do if Library.supported(entry)then
@@ -542,10 +543,11 @@ function Core:remote(entry)
  local c=self:cached('sdr:'..entry.id);return c and self.storage:readJSON(c.path)
 end
 function Core:resume(explicit)
+ if self.retired then return end
  self:syncNetworkJobs()
  if self.relocating then return end
  for _,d in pairs(self.state.downloads)do
-  self:download(d.entry,d.pool,nil,not explicit and automaticDownload(d))
+  self:download(d.entry,d.pool,nil,not explicit and automaticDownload(d),d.light_prefetch)
  end
  self:flushPending(explicit)
 end
@@ -618,6 +620,7 @@ require('gdriveshelf/scanning')(Core)
 require('gdriveshelf/relocation').install(Core)
 require('gdriveshelf/indexer')(Core)
 require('gdriveshelf/progress')(Core)
+require('gdriveshelf/syncqueue')(Core)
 require('gdriveshelf/localcovers').attach(Core)
 require('gdriveshelf/overrides').attach(Core)
 return Core

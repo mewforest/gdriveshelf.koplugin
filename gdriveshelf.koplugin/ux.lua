@@ -10,6 +10,7 @@ return function(Shelf,env)
  function Shelf:loadSettings()
   local s=oldLoad(self)
   if s.jump_to_resume==nil then s.jump_to_resume=true end
+  if s.light_threshold==nil then s.light_threshold=95 end
   if s.known_first==nil then s.known_first=true end
   if s.load_covers==nil then s.load_covers=true end
   if s.load_metadata==nil then s.load_metadata=true end
@@ -31,13 +32,11 @@ return function(Shelf,env)
  end
  function Shelf:addToMainMenu(items)
   items.gdriveshelf={text='Google Drive Shelf',callback=function()self:runAction(function()self:showLibrary()end)end}
-  items.gdriveshelf_light={text=tr('Light mode'),checked_func=function()return self.settings.light_mode==true end,
-   callback=function()self:runAction(function()self:toggleLightMode()end)end}
   items.gdriveshelf_settings={text=tr('Google Drive Shelf settings'),callback=function()self:runAction(function()self:showSettings()end)end}
   for _,context in ipairs{'filemanager','reader'}do
    local ok,order=pcall(require,'ui/elements/'..context..'_menu_order')
    if ok and order.main then
-    for _,id in ipairs{'gdriveshelf_light','gdriveshelf_settings','gdriveshelf'}do
+    for _,id in ipairs{'gdriveshelf_settings','gdriveshelf'}do
      local found=false;for _,value in ipairs(order.main)do if value==id then found=true end end
      if not found then table.insert(order.main,2,id)end
     end
@@ -137,7 +136,8 @@ return function(Shelf,env)
     end
    elseif e.size then right=env.bytes(e.size)end
    if not(e.is_folder and self.settings.hide_empty~=false and stats.empty==true)then
-   rows[#rows+1]={text=name,card_title=cardTitle,card_details=cardDetails,card_left=left,card_right=right,card_left_icon=left and 'move.down',card_right_icon=rightIcon,card_fallback=left and tr('Cache')..': '..left..(right and ' · '..right or '')or right,mandatory=not e.is_folder and e.size and env.bytes(e.size)or nil,entry=e,icon=e.is_folder and 'appbar.filebrowser'or 'appbar.pageview',icon_file=cover,cover=cover~=nil,folder_progress=e.folder_progress,
+   rows[#rows+1]={text=name,list_title=e.is_folder and cardTitle or nil,
+    list_detail=e.is_folder and (name:match('^[^\n]+\n(.+)') or ''):gsub('\n',' · ') or nil,card_title=cardTitle,card_details=cardDetails,card_left=left,card_right=right,card_left_icon=left and 'move.down',card_right_icon=rightIcon,card_fallback=left and tr('Cache')..': '..left..(right and ' · '..right or '')or right,mandatory=not e.is_folder and e.size and env.bytes(e.size)or nil,entry=e,icon=e.is_folder and 'appbar.filebrowser'or 'appbar.pageview',icon_file=cover,cover=cover~=nil,folder_progress=e.folder_progress,
     callback=function()
      if self.selection and not e.is_folder then self.selection[e.id]=not self.selection[e.id];self:refreshBrowser()
      elseif e.is_folder then self:showFolder(e.id,offline)
@@ -217,43 +217,50 @@ return function(Shelf,env)
  local function gridSize(value)
   if value=='2x2' then return 2,2 end
   if value=='2x3' then return 2,3 end
-  if value=='3x2' then return 3,2 end
-  return 3,3
+  if value=='3x3' then return 3,3 end
+  return 3,2
  end
  function Shelf:browserPresentation(parent,entries)
   local info=self.core:titleInfo(parent)
   local folder=self.core.state.folders[parent]or{id=parent,name=parent,is_folder=true}
-  local hasFolders,comic=false,false
-  local count,total=0,0
+  local hasFolders,comics=false,0
+  local count,total,downloaded,downloadedBytes=0,0,0,0
   for _,e in ipairs(entries or {})do
    if e.is_folder and not Metadata.isService(e)then hasFolders=true end
    if Library.supported(e)then
     count=count+1
     if total then total=tonumber(e.size) and total+tonumber(e.size) or nil end
-    if Catalog.kind(e,self.core.state)=='comics'then comic=true end
+    if Catalog.kind(e,self.core.state)=='comics'then comics=comics+1 end
+    local cached=self.core:cached(e.id)
+    if cached then downloaded=downloaded+1;downloadedBytes=downloadedBytes+(cached.size or 0)end
    end
   end
   local kind=(self.core.state.folder_types or {})[parent]
-  if kind=='comics'then comic=true elseif kind=='books'then comic=false end
-  local grid=(hasFolders and self.settings.folder_view=='grid')or(not hasFolders and self.settings.file_view=='grid')
+  local comic=kind=='comics' or (kind~='books' and parent~='root' and comics>0 and (info.cover_path or info.description or (not hasFolders and comics==count)))
+  comic=not not comic
+  local grid=(hasFolders and self.settings.folder_view~='list')or(not hasFolders and self.settings.file_view=='grid')
   local columns,rows=gridSize(hasFolders and self.settings.folder_grid or not hasFolders and self.settings.file_grid)
   local visit=self.folder_visit or {}
   local header=self.settings.info_header~=false and comic and not visit.collapsed
   local countText=count>0 and string.format(tr('%d files'),count)or nil
   if countText and total then countText=countText..' · '..env.bytes(total)end
+  local downloadedText=downloaded>0 and string.format(tr('Downloaded %d (%s)'),downloaded,env.bytes(downloadedBytes))or nil
   local resume=visit.resume
   local conflict=self.core.metadataConflict and self.core:metadataConflict(folder)~=nil
   local signature=table.concat({
    tostring(parent),tostring(folder.parent_id),info.title or folder.name,header and(info.cover_path or '')or '',
-   header and(info.description or '')or '',header and(countText or '')or '',tostring(header),tostring(comic),
+   header and(info.description or '')or '',header and(countText or '')or '',header and(downloadedText or '')or '',tostring(header),tostring(comic),
    tostring(grid),tostring(hasFolders),columns,rows,tostring(self:downloadActivity()~=nil),tostring(conflict),
-   tostring(resume and resume.entry and resume.entry.id),tostring(resume and resume.waiting),tostring(resume and resume.resume)
+   tostring(resume and resume.entry and self:chapterLabel(resume.entry,info)),
+   tostring(resume and resume.entry and resume.entry.id),tostring(resume and resume.resume),
+   tostring(resume and resume.summary and resume.summary.status),tostring(resume and resume.remote_time),
+   tostring(self.startup_loading),tostring(self.browser_loading and self.startup_loading)
   },'|')
-  return {info=info,folder=folder,hasFolders=hasFolders,comic=comic,grid=grid,header=header,columns=columns,rows=rows,stats=countText,conflict=conflict,signature=signature}
+  return {info=info,folder=folder,hasFolders=hasFolders,comic=comic,grid=grid,header=header,columns=columns,rows=rows,stats=countText,cached=downloadedText,conflict=conflict,signature=signature}
  end
  function Shelf:revealResume()
   local visit,menu=self.folder_visit,self.folder_menu
-  if not visit or not menu or visit.user_paged or visit.restored_page or self.settings.jump_to_resume==false or not visit.resume or visit.resume.waiting or not visit.resume.entry then return end
+  if not visit or not menu or visit.user_paged or visit.restored_page or self.settings.jump_to_resume==false or not visit.resume or not visit.resume.entry then return end
   for i,row in ipairs(menu.item_table)do
    if row.entry and row.entry.id==visit.resume.entry.id then
     visit.restored_page=true
@@ -265,17 +272,80 @@ return function(Shelf,env)
    end
   end
  end
- function Shelf:startFolderResume()
+ function Shelf:startFolderResume(cachedOnly)
   local visit=self.folder_visit
-  if not visit or visit.resume_started or not self.core.resumeChapter then return end
-  if not self:browserPresentation(self.folder_id,self.folder_entries).comic then return end
+  if not visit or not self.core.resumeChapter then return end
+  if not self:browserPresentation(self.folder_id,self.folder_entries).comic then visit.resume=nil;return end
+  if cachedOnly then
+   visit.resume=self.core:resumeChapter(self.folder_id,self.folder_entries,nil,true)
+   return
+  end
+  if visit.resume_started then return end
   visit.resume_started=true
+  visit.resume_serial=(visit.resume_serial or 0)+1
+  local serial=visit.resume_serial
   visit.resume=self.core:resumeChapter(self.folder_id,self.folder_entries,function(result)
-   if self.folder_visit~=visit or not self.folder_menu then return end
+   if self.folder_visit~=visit or visit.resume_serial~=serial or not self.folder_menu then return end
    visit.resume=result
    self:requestBrowserRefresh(false)
-  end)
+  end,self.folder_offline)
   self:requestBrowserRefresh(false)
+ end
+ function Shelf:folderAnchor(menu)
+  local first=((menu.page or 1)-1)*(menu.perpage or 7)+1
+  local candidate=self.folder_visit and self.folder_visit.resume
+  local firstEntry
+  for i=first,math.min(#menu.item_table,first+menu.perpage-1)do
+   local entry=menu.item_table[i].entry
+   if entry then
+    firstEntry=firstEntry or entry.id
+    if candidate and candidate.entry and entry.id==candidate.entry.id then return {id=entry.id,index=i}end
+   end
+  end
+  return {id=firstEntry,index=first}
+ end
+ function Shelf:restoreFolderAnchor(menu,anchor)
+  if not anchor then return end
+  local index=anchor.index
+  for i,row in ipairs(menu.item_table)do
+   if row.entry and row.entry.id==anchor.id then index=i;break end
+  end
+  local page=math.max(1,math.min(math.floor((index-1)/menu.perpage)+1,menu.page_num))
+  if menu.page~=page then
+   self.automatic_page=true
+   menu:onGotoPage(page)
+   self.automatic_page=nil
+  end
+ end
+ function Shelf:requestFolder(visit,parent,force)
+  local core=self.core
+  local known=core.state.listings[parent] and core.state.listings[parent].complete
+  self.browser_loading=not known and core:online()
+  local folder=core.state.folders[parent]
+  local pending=core:folder(parent,folder and folder.name or parent,function(entries,cached,err)
+   if self.core~=core or self.folder_visit~=visit or not self.folder_menu then return end
+   if cached then return end
+   self.browser_loading,self.startup_loading=false,nil
+   self.browser_error=err
+   if entries then
+    self.folder_generation=(self.folder_generation or 0)+1
+    self.folder_entries=entries
+    self.opened_chapters=self.settings.light_mode and Library.matchedSidecars(entries,parent)or nil
+    self.folder_facts={}
+    visit.resume_started=nil
+    self:startFolderResume()
+   end
+   self:requestBrowserRefresh(false)
+  end,force)
+  if pending==false or not core:online()then
+   self.browser_loading,self.startup_loading=false,nil
+   self:startFolderResume()
+   self:requestBrowserRefresh(false)
+  end
+  if self.settings.light_mode and core.reading_sync_due and core:online()then
+   core.reading_sync_due=nil
+   core:flushPending(true)
+  end
  end
  function Shelf:refreshBrowser(statusOnly)
   local m=self.folder_menu
@@ -289,6 +359,16 @@ return function(Shelf,env)
    self.browser_relist=nil
    self.folder_entries=self.folder_offline and self:offlineChildren(self.folder_id)or self.core:cachedList(self.folder_id)
    self.opened_chapters=self.settings.light_mode and Library.matchedSidecars(self.folder_entries,self.folder_id)or nil
+   local visit=self.folder_visit
+   if visit then
+    local listing=self.core.state.listings[self.folder_id]
+    if listing and listing.dirty and not self.folder_offline then
+     if not(self.core.folder_waiters and self.core.folder_waiters[self.folder_id])then self:requestFolder(visit,self.folder_id)end
+    else
+     visit.resume_started=nil
+     self:startFolderResume()
+    end
+   end
   end
   local activity=self:downloadActivity()
   if self.browser_activity_present~=(activity~=nil)then
@@ -302,7 +382,9 @@ return function(Shelf,env)
   if statusOnly then return end
   local view=self:browserPresentation(self.folder_id,self.folder_entries or {})
   if self.browser_header_signature~=view.signature then return self:showFolder(self.folder_id,self.folder_offline,false,true)end
+  local anchor=self:folderAnchor(m)
   self:replaceMenu(m,self:folderRows(self.folder_id,self.folder_entries or {},self.folder_offline))
+  self:restoreFolderAnchor(m,anchor)
   self:revealResume()
   local visit=self.folder_visit
   if not self.browser_loading and not(visit and visit.resume and visit.resume.waiting) then self:visibleProgress(m)end
@@ -312,7 +394,7 @@ return function(Shelf,env)
   if not offline and not self:hasCredentials()then return self:showConnectionSetup()end
   self.browser_positions=self.browser_positions or {}
   if self.folder_menu then
-   self.browser_positions[self.folder_id]={page=self.folder_menu.page}
+   self.browser_positions[self.folder_id]=self:folderAnchor(self.folder_menu)
    self.replacing_folder=render_only==true
    close(self.folder_menu)
    self.replacing_folder=nil
@@ -321,12 +403,13 @@ return function(Shelf,env)
    if self.folder_id~=parent then self.selection=nil end
    self.folder_id,self.folder_offline=parent,offline
    self.browser_pending,self.browser_relist,self.browser_error=nil,nil,nil
-   self.browser_loading=not offline and core:online()
+   self.browser_loading=not offline and not(core.state.listings[parent] and core.state.listings[parent].complete) and core:online()
    self.folder_entries=offline and self:offlineChildren(parent)or core:cachedList(parent)
    self.opened_chapters=self.settings.light_mode and Library.matchedSidecars(self.folder_entries,parent)or nil
    self.folder_facts={}
    self.folder_visit={restored_page=force or navigation=='home' or navigation=='back'}
    if navigation=='home'then self.browser_positions[parent]=nil end
+   self:startFolderResume(true)
   end
   local visit=self.folder_visit or {}
   local view=self:browserPresentation(parent,self.folder_entries)
@@ -353,17 +436,22 @@ return function(Shelf,env)
   local screen=require('device').screen
   local summary
   if view.header then
-   summary={cover_path=info.cover_path,text=info.title or folder.name,description=info.description,stats=view.stats,height=math.floor(screen:getHeight()*.18)}
+   summary={cover_path=info.cover_path,text=info.title or folder.name,description=info.description,stats=view.stats,cached=view.cached,height=math.floor(screen:getHeight()*.235)}
   end
   local resume=visit.resume
   local resumeButton
-  if view.comic and resume and resume.entry then
-   local label=resume.waiting and tr('Loading reading progress…')or
-    (resume.resume and tr('Continue reading')or tr('Read chapter'))..' · '..self:chapterLabel(resume.entry,info)
-   resumeButton={text=label,enabled=not resume.waiting,callback=action(function()
-    visit.user_paged=true
-    self:openEntry(resume.entry,resume.resume)
-   end)}
+  if view.header and resume and resume.entry then
+   local target=resume.entry
+   local label=self:chapterLabel(target,info)
+   local history=(core.state.history or {})[target.id]
+   local time=math.max(tonumber(history and history.time) or 0,resume.remote_time or 0)
+   if resume.summary and resume.summary.status=='complete'then label=label..' · '..tr('Read')end
+   if time>0 then label=label..' · '..os.date('%d.%m %H:%M',time)end
+   resumeButton={text=tr(resume.resume and 'Continue'or 'Read chapter'),detail=label,
+    enabled=true,callback=action(function()
+     visit.user_paged=true
+     self:openEntry(target,resume.resume)
+    end)}
   end
   local function back()
    if folder.parent_id then self:showFolder(folder.parent_id,offline,nil,nil,'back')
@@ -372,6 +460,9 @@ return function(Shelf,env)
   local status=self:browserStatus()
   local header=require('gdriveshelf/browser').header{
    width=screen:getWidth(),title=info.title or folder.name,status=status,buttons=buttons,summary=summary,activity=activity,resume=resumeButton,
+   hint=parent=='root' and not offline and self.homeFolderHint and self:homeFolderHint() or nil,
+   hint_callback=action(function()self:chooseHomeFolder()end),
+   brand=self.browser_loading and self.startup_loading and env.root..'/resources/logo.png' or nil,
    collapse=self.settings.info_header~=false and view.comic and action(function()
     visit.collapsed=not visit.collapsed
     self:showFolder(parent,offline,false,true)
@@ -380,43 +471,17 @@ return function(Shelf,env)
    activity_callback=action(function()self:showQueue()end),
    back=action(back),close=function()close(self.folder_menu)end,info=action(function()self:showInfo(parent)end)}
   local menu=self:menu(info.title or folder.name,self:folderRows(parent,self.folder_entries,offline),{
-   icons=not grid,grid=grid,columns=view.columns,header=header,perpage=grid and view.columns*view.rows or 7,multiline=true,
+   icons=not grid,grid=grid,decorated=not grid,columns=view.columns,header=header,perpage=grid and view.columns*view.rows or 7,multiline=true,
    lazy=true,defer_lazy=true,parent_enabled=folder.parent_id~=nil,
    close=function()if not self.replacing_folder then core.catalog_visible=false end end})
   self.folder_menu=menu
   menu._shelf_status=status
   menu.onClose=function()back();return true end
   menu.onReturn=menu.onClose
-  local position=self.browser_positions[parent]
-  if position and position.page then
-   self.automatic_page=true
-   menu:onGotoPage(math.min(position.page,menu.page_num))
-   self.automatic_page=nil
-  end
+  self:restoreFolderAnchor(menu,self.browser_positions[parent])
   self:revealResume()
   if render_only and not self.browser_loading and not(visit.resume and visit.resume.waiting)then self:visibleProgress(menu)end
-  if not offline and not render_only then
-   local pending=core:folder(parent,folder.name,function(entries,cached,err)
-    if self.folder_visit~=visit or not self.folder_menu then return end
-    if not cached then self.browser_loading=false;self.browser_error=err end
-    if entries and not cached then
-     self.folder_generation=(self.folder_generation or 0)+1
-     self.folder_entries=entries
-     self.opened_chapters=self.settings.light_mode and Library.matchedSidecars(entries,parent)or nil
-     self.folder_facts={}
-    end
-    if not cached then self:startFolderResume();self:requestBrowserRefresh(false)end
-   end,force)
-   if pending==false or not core:online()then
-    self.browser_loading=false
-    self:startFolderResume()
-    self:requestBrowserRefresh(false)
-   end
-   if self.settings.light_mode and core.reading_sync_due and core:online()then
-    core.reading_sync_due=nil
-    core:flushPending(true)
-   end
-  elseif not render_only then self:startFolderResume()end
+  if not offline and not render_only then self:requestFolder(visit,parent,force)end
   return self.folder_menu
  end
  function Shelf:showBrowserSort()
@@ -432,11 +497,11 @@ return function(Shelf,env)
   local menu
   local rows={
    {icon='appbar.filebrowser',text=tr('Actions for this folder'),callback=function()close(menu);self:folderActions(folder)end},
-   {icon='cre.render.reload',text=tr('Refresh folder information'),callback=function()close(menu);self:showFolder(parent,offline,true)end},
-   {icon='bookmark',text=tr('History'),callback=function()self:showHistory()end},
-   {icon='move.down',text=tr('Select files to keep offline'),callback=function()close(menu);self.selection=self.selection or {};self:refreshBrowser();self:showSelectionActions()end},
-   {icon='bookmark',text=tr('Available offline'),callback=function()close(menu);self:showOffline()end},
-   {icon='move.down',text=tr('Downloads and sync'),callback=function()self:showQueue()end},
+   {icon='cre.render.reload',text=tr('Refresh folder listing and metadata'),callback=function()close(menu);self:showFolder(parent,offline,true)end},
+   {icon_file=env.root..'/resources/icons/history.svg',text=tr('History'),callback=function()self:showHistory()end},
+   {icon_file=env.root..'/resources/icons/select-files.svg',text=tr('Select files to keep offline'),callback=function()close(menu);self.selection=self.selection or {};self:refreshBrowser();self:showSelectionActions()end},
+   {icon_file=env.root..'/resources/icons/offline-books.svg',text=tr('Available offline'),callback=function()close(menu);self:showOffline()end},
+   {icon_file=env.root..'/resources/icons/queue.svg',text=tr('Downloads and sync'),callback=function()self:showQueue()end},
    {icon='column.three',text=tr('Storage and cache'),callback=function()self:showMemory()end},
    {icon='appbar.settings',text=tr('Settings'),callback=function()self:showSettings()end},
    {icon='info',text=tr('About Google Drive Shelf'),callback=function()self:showAbout()end},
@@ -445,9 +510,14 @@ return function(Shelf,env)
    table.insert(rows,3,{icon='cre.render.reload',text=tr('Library indexing'),callback=function()self:showIndexScreen()end})
   end
   if self.core.loadFolderProgress then
-   table.insert(rows,3,{icon='bookmark',text=tr('Load detailed progress for all chapters'),callback=function()
+   table.insert(rows,3,{icon_file=env.root..'/resources/icons/reading-progress.svg',text=tr('Load detailed progress for all chapters'),callback=function()
     close(menu)
     self:showFolderProgress(parent,self.folder_entries)
+   end})
+  end
+  if offline and self.offline_all_link==parent then
+   table.insert(rows,2,{icon_file=env.root..'/resources/icons/offline-books.svg',text=tr('All offline downloads'),callback=function()
+    close(menu);self:showOffline(true)
    end})
   end
   menu=self:menu(tr('Folder actions'),rows,{icons=true})
@@ -479,10 +549,10 @@ return function(Shelf,env)
     close(menu)
     env.message(tr('Home folder saved'))
    end},
-   {icon='move.down',text=tr('Download folder (including subfolders)'),callback=function()close(menu);self:queueFolderDownload(folder)end},
+   {icon_file=env.root..'/resources/icons/download-folder.svg',text=tr('Download folder (including subfolders)'),callback=function()close(menu);self:queueFolderDownload(folder)end},
    {icon='close',text=tr('Remove downloads from this folder and subfolders'),callback=function()close(menu);self:removeTree(folder.id)end},
    {icon='info',text=tr('Information'),callback=function()self:showInfo(folder.id)end},
-   {icon='cre.render.reload',text=tr('Refresh folder information'),callback=function()close(menu);self:showFolder(folder.id,false,true)end},
+   {icon='cre.render.reload',text=tr('Refresh folder listing and metadata'),callback=function()close(menu);self:showFolder(folder.id,false,true)end},
    {icon='appbar.pageview',text=tr('Change content type')..' · '..tr(kind),callback=function()
     local choiceMenu
     local choices={}
@@ -545,7 +615,7 @@ return function(Shelf,env)
   local rows={}
   for _,size in ipairs{'2x2','2x3','3x2','3x3'}do
    local choice=size
-   rows[#rows+1]={text=((self.settings[key]or'3x3')==choice and '✓ 'or '')..choice:gsub('x',' × '),callback=function()
+   rows[#rows+1]={text=((self.settings[key]or'3x2')==choice and '✓ 'or '')..choice:gsub('x',' × '),callback=function()
     self.settings[key]=choice
     self:saveSettings()
     close(menu)
@@ -568,6 +638,7 @@ return function(Shelf,env)
  function Shelf:openEntry(entry,resume)
   if shared.requests and shared.requests.core~=self.core then shared.requests:cancel(true);shared.requests=nil end
   shared.requests=shared.requests or Requests.new(self.core)
+  if self.download_dialog and self.download_dialog.entry.id==entry.id then return end
   if self.download_dialog then
    local previous=self.download_dialog
    self.download_dialog=nil
@@ -584,6 +655,7 @@ return function(Shelf,env)
    self:openDownloadedEntry(entry,resume,path)
   end
   if not cached then
+   if self.core.completed_downloads then self.core.completed_downloads[entry.id]=nil end
    self.core.background_downloads=self.core.background_downloads or {}
    self.core.background_downloads[entry.id]=nil
    local function dismiss(background)
@@ -594,26 +666,87 @@ return function(Shelf,env)
     UI():close(dialog)
     self:requestBrowserRefresh(true)
    end
-   dialog=require('ui/widget/buttondialog'):new{title=self:downloadTitle(entry),buttons={{
+   dialog=self:transferDialog(entry,{
     {text=tr('Cancel'),callback=function()dismiss(false)end},
-    {text=tr('In background'),callback=function()dismiss(true)end},
-   }}}
+    {text=tr('In background without opening'),callback=function()dismiss(true)end},
+   })
    dialog.onClose=function()dismiss(false);return true end
    self.download_dialog={widget=dialog,entry=entry}
    UI():show(dialog)
   end
   shared.requests:start(entry,finish)
  end
- function Shelf:downloadTitle(entry)
+ function Shelf:downloadSummary(entry,now)
   local value=(self.core.transfer or {})[entry.id]or {}
-  local state=self.core.networkState and self.core:networkState()
-  local label=value.stage=='complete' and 'Checking document…' or 'Downloading'
-  if state=='retry' or state=='sleep' then label='Waiting for a connection' end
-  local total=value.total or entry.size
+  local state=self.core.networkState and self.core:networkState()or'online'
+  local label=({retry='Waiting before retry',sleep='Waiting for the device to wake',offline='Offline mode',auth='Authorization is required'})[state]
+  label=label or (value.stage=='complete'and 'Checking document…'or 'Downloading')
+  local total=tonumber(value.total or entry.size)
   local received=value.received or 0
-  local text=tr(label)..'\n'..entry.name..'\n'..env.bytes(received)
-  if total and total>0 then text=text..' / '..env.bytes(total)..string.format(' · %d%%',math.min(100,math.floor(received/total*100)))end
-  return text
+  local percent=total and total>0 and math.max(0,math.min(1,received/total))or nil
+  local text=env.bytes(received)
+  if percent then text=text..' / '..env.bytes(total)..string.format(' · %d%%',math.floor(percent*100))end
+  local elapsed=value.started and math.max(0,(value.sampled or now or os.time())-value.started)
+  if elapsed and elapsed>=1 then
+   text=text..' · '..string.format(tr('%s elapsed'),self:transferDuration(elapsed))
+   if state=='online' and value.stage~='complete' and percent and percent>0 and percent<1 and elapsed>=3 and (value.samples or 0)>=2 then
+    text=text..' · '..string.format(tr('about %s left'),self:transferDuration(elapsed*(1-percent)/percent))
+   end
+  end
+  return tr(label),text,percent
+ end
+ function Shelf:transferDuration(seconds)
+  seconds=math.floor(seconds+.5)
+  if seconds<60 then return string.format(tr('%d s'),seconds)end
+  if seconds<3600 then return string.format(tr('%d min %02d s'),math.floor(seconds/60),seconds%60)end
+  return string.format(tr('%d h %02d min'),math.floor(seconds/3600),math.floor(seconds/60)%60)
+ end
+ function Shelf:downloadTitle(entry)
+  local stage,detail=self:downloadSummary(entry)
+  return stage..'\n'..entry.name..'\n'..detail
+ end
+ function Shelf:transferDialog(entry,buttons)
+  local dialog=require('ui/widget/buttondialog'):new{title=self:downloadTitle(entry),buttons={buttons}}
+  local _,_,percent=self:downloadSummary(entry)
+  if percent then
+   local bar=require('ui/widget/progresswidget'):new{width=dialog:getAddedWidgetAvailableWidth(),
+    height=require('device').screen:scaleBySize(8),bordersize=1,radius=0,percentage=percent,not_focusable=true,parent=dialog}
+   dialog:addWidget(bar)
+   dialog._transfer_bar=bar
+  end
+  return dialog
+ end
+ function Shelf:updateReaderTransfer(entry)
+  local footer=self.ui and self.ui.view and self.ui.view.footer
+  local active=self:activeEntry()
+  if not self.settings.reader_prefetch_status or not footer or not footer.addAdditionalFooterContent or not active then
+   return self:clearReaderTransfer()
+  end
+  local nextChapter=self.core:next(active)
+  local value=nextChapter and (self.core.transfer or {})[nextChapter.id]
+  if entry and nextChapter and entry.id~=nextChapter.id then return end
+  if not value then return self:clearReaderTransfer()end
+  local total=tonumber(value.total)
+  local label=tr('Downloading next chapter')
+  local line=total and total>0 and label..' · '..math.min(100,math.floor(value.received/total*100))..'%' or label
+  if not self._reader_transfer then
+   self._reader_transfer={footer=footer,initial=footer.settings and footer.settings.additional_content}
+   local state=self._reader_transfer
+   state.render=function()return state.text end
+   footer:addAdditionalFooterContent(state.render)
+  end
+  if self._reader_transfer.text~=line then
+   self._reader_transfer.text=line
+   if footer.onRefreshAdditionalContent then footer:onRefreshAdditionalContent()end
+  end
+ end
+ function Shelf:clearReaderTransfer()
+  local state=self._reader_transfer
+  if not state then return end
+  self._reader_transfer=nil
+  state.footer:removeAdditionalFooterContent(state.render)
+  if state.initial and state.footer.settings then state.footer.settings.additional_content=true end
+  if state.footer.maybeUpdateFooter then state.footer:maybeUpdateFooter()end
  end
  local statusEvents={transfer=true,network_state=true,queued=true,download=true,indexing=true,progress_state=true,scanning=true,folder_scanning=true,relocating=true,sync_error=true}
  function Shelf:onCoreChange(kind,entry,err)
@@ -638,18 +771,25 @@ return function(Shelf,env)
    self:requestBrowserRefresh(statusOnly)
   end
   local q=self.queue_menu
-  if q and not q._closed and not self.queue_tick and self:whenVisible(q,function()if self.queue_menu==q and not q._closed then self:showQueue()end end)then
+  local now=os.time()
+  if q and not q._closed and not self.queue_tick and (kind~='transfer' or self.queue_painted~=now) and self:whenVisible(q,function()if self.queue_menu==q and not q._closed then self:showQueue()end end)then
    self.queue_tick=true
    UI():nextTick(function()
     self.queue_tick=nil
-    if self.queue_menu==q and not q._closed and self:whenVisible(q)then self:showQueue()end
+    if self.queue_menu==q and not q._closed and self:whenVisible(q)then self.queue_painted=now;self:showQueue()end
    end)
   end
-  local d=self.download_dialog or self.cover_download
+  local d=self.download_dialog or self.cover_download or self.queue_download
   if (kind=='transfer' or kind=='network_state')and d and (not entry or entry.id==d.entry.id)then
    local function paint()
-    if self.download_dialog~=d and self.cover_download~=d then return end
+    if self.download_dialog~=d and self.cover_download~=d and self.queue_download~=d then return end
+    if kind=='transfer' then
+     if d.updated==now then return end
+     d.updated=now
+    end
     local title=self:downloadTitle(d.entry)
+    local _,_,percent=self:downloadSummary(d.entry)
+    if d.widget._transfer_bar and percent then d.widget._transfer_bar:setPercentage(percent)end
     if d.widget.title~=title then d.widget:setTitle(title)end
    end
    if self:whenVisible(d.widget,paint)then paint()end
@@ -660,13 +800,29 @@ return function(Shelf,env)
    self.scan_dialog:setTitle(tr('Checking folder contents…')..' '..self.core.folder_scan.done)
   end
   if kind=='relocating'and self.move_dialog and err and self:whenVisible(self.move_dialog)then self.move_dialog:setTitle(tr('Moving documents…')..' '..err.received..' / '..tostring(err.total or '?'))end
-  if kind=='conflict'then env.message(tr('Both progress versions were preserved. Choose a version in Downloads and sync.'))end
+  if kind=='download' or kind=='transfer' or kind=='downloaded' or kind=='error'then self:updateReaderTransfer(entry)end
+  if kind=='downloaded' and entry and self.core.background_downloads and self.core.background_downloads[entry.id] then
+   self.core.background_downloads[entry.id]=nil
+   self.core.completed_downloads=self.core.completed_downloads or {}
+   self.core.completed_downloads[entry.id]=entry
+   local core=self.core
+   UI():nextTick(function()
+    if self.core~=core or core.retired or not core.completed_downloads[entry.id]then return end
+    self:actionNotification(string.format(tr('Downloaded %s · Open'),entry.name),function()
+     if self.core==core and core:cached(entry.id)then core.completed_downloads[entry.id]=nil;self:openEntry(entry)end
+    end)
+   end)
+  end
+  if kind=='conflict' and entry then self:notifyProgressConflict(entry)end
+  if kind=='sync_resolved' and entry and err and err.choice=='local' and (err.action=='pushed' or err.action=='same')then
+   self:notifyProgressSynced(entry)
+  end
  end
  function Shelf:showSettings()
   local menu
   local rows={
    checked(self.settings,'offline','Offline mode',function()self.core:setOffline(not self.settings.offline);self:saveSettings();close(menu);self:showSettings()end),
-   checked(self.settings,'light_mode','Light mode',function()self:toggleLightMode();close(menu);self:showSettings()end),
+   checked(self.settings,'light_mode','Light mode (less background work)',function()self:toggleLightMode();close(menu);self:showSettings()end),
   }
   for _,category in ipairs{
    {'connection','wifi.secure.100','Connection and startup'}, {'catalog','appbar.filebrowser','Catalog and appearance'},
@@ -691,53 +847,59 @@ return function(Shelf,env)
   end
   if category=='connection'then
    title='Connection and startup'
-   rows={
-    {icon='wifi.secure.100',text=tr('Choose authorization JSON'),callback=function()self:pickCredentials()end},
-    {icon='appbar.filebrowser',text=tr('Enter JSON file path'),callback=function()self:pickCredentialsByPath()end},
-    {icon='home',text=tr('Home folder: ID or link'),callback=function()self:input(tr('Google Drive folder ID or link'),s.home,function(value)
-     local id=value:match('/folders/([%w_-]+)')or value:match('[?&]id=([%w_-]+)')or value
-     if id~='root'and not id:match('^[%w_-]+$')then return false,tr('Invalid folder ID')end;s.home=id;self:saveSettings();return true
-    end)end},
-    {icon='home',text=tr('Start with Google Drive Shelf'),callback=function()require('gdriveshelf/integration').chooseStartup(self)end},
-    {icon='info',text=tr('Diagnostics'),callback=function()self:showDiagnostics()end},
-    {icon='appbar.navigation',text=tr('Gesture shortcuts'),callback=function()env.message(tr('In KOReader gesture settings, choose General → Google Drive Shelf: open home folder, history, or current document folder.'))end},
-   }
+   rows=self:connectionRows(function()if menu and not menu._closed then reopen()end end)
   elseif category=='catalog'then
    title='Catalog and appearance'
    rows={
     {icon='appbar.filebrowser',text=tr('Folder sorting'),callback=function()self:showTitleSort()end},
     {icon='appbar.pageview',text=tr('File sorting'),callback=function()self:showFileSort()end},
-    {text=tr('Folder view')..': '..tr(s.folder_view or 'list'),callback=function()s.folder_view=s.folder_view=='grid'and 'list'or 'grid';self:saveSettings();reopen()end},
+    {text=tr('Folder view')..': '..tr(s.folder_view or 'grid'),callback=function()s.folder_view=s.folder_view~='list'and 'list'or 'grid';self:saveSettings();reopen()end},
    }
-   rows[#rows+1]={text=tr('Folder grid size')..' · '..(s.folder_grid or '3x3'),callback=function()self:showGridSizes('folder_grid','Folder grid size')end}
-   rows[#rows+1]={text=tr('Chapter grid size')..' · '..(s.file_grid or '3x3'),callback=function()self:showGridSizes('file_grid','Chapter grid size')end}
+   rows[#rows+1]={text=tr('Folder grid size')..' · '..(s.folder_grid or '3x2'),callback=function()self:showGridSizes('folder_grid','Folder grid size')end}
+   rows[#rows+1]={text=tr('Chapter grid size')..' · '..(s.file_grid or '3x2'),callback=function()self:showGridSizes('file_grid','Chapter grid size')end}
    toggle('jump_to_resume','Go to the chapter page when opening a folder')
    toggle('known_first','Show known folders first');toggle('load_covers','Download folder covers');toggle('load_metadata','Download descriptive metadata');toggle('show_service','Show service files')
    toggle('hide_empty','Hide empty folders');toggle('info_header','Comic folder information header');toggle('local_covers','Create covers for downloaded documents')
    rows[#rows+1]=checked(s,'index_enabled','Index home folder recursively',function()
     if s.index_enabled then s.index_enabled=false;self.core:cancelIndex();self:saveSettings();reopen()else self:enableRecursiveIndex()end
    end)
-   rows[#rows+1]={icon='cre.render.reload',text=tr('Refresh home catalog now'),callback=function()self:showFolder(s.home or 'root',false,true)end}
+   rows[#rows+1]={icon='cre.render.reload',text=tr('Refresh home catalog now'),callback=function()
+    UI():show(self:confirmation{text=tr('Check the home folder and fetch recent Drive changes? Saved files and reading progress will be kept.'),
+     ok_text=tr('Refresh'),ok_callback=function()close(menu);self:showFolder(s.home or 'root',false,'home')end})
+   end}
    rows[#rows+1]={icon='cre.render.reload',text=tr('Reindex library'),callback=function()self:reindexLibrary()end}
   elseif category=='downloads'then
    title='Downloads and storage'
    rows={
     {icon='column.three',text=tr('Storage and cache'),callback=function()self:showMemory()end},
-    {icon='appbar.filebrowser',text=tr('Document folder'),callback=function()self:chooseBooksFolder()end},
-    {text=tr('Document folder: enter path'),callback=function()self:input(tr('Document folder'),self.core.storage.books_dir,function(path)return self:moveBooks(path)end)end},
+    {icon='appbar.filebrowser',text=tr('Document folder'),callback=function()self:showDocumentFolder()end},
    }
-   number('auto_mib','Temporary reading cache limit, MiB',1,1048576);number('meta_mib','Metadata cache limit, MiB',1,1048576)
   elseif category=='reading'then
    title='Reading and sync'
    number('prefetch','Chapters to prefetch',0,3);number('threshold','Prefetch threshold, %',0,100)
    toggle('immediate','Prefetch immediately after opening');toggle('prefetch_books','Prefetch the next ordinary book')
-   toggle('sync_enabled','Sync KOReader reading progress',function()if s.sync_enabled then self.core:flushPending()end end)
-   rows[#rows+1]={text=tr('Progress can be stored beside books or centrally in KOReader. Cloud sync exports native .sdr data to the Drive folder, visible to everyone with access. With sync disabled, reading stays local.'),select_enabled=false}
-   rows[#rows+1]={icon='move.down',text=tr('Downloads and sync'),callback=function()self:showQueue()end}
-   rows[#rows+1]={icon='bookmark',text=tr('Save a snapshot of the current book'),callback=function()self:snapshotCurrent()end}
+   number('light_prefetch','Chapters to prefetch in light mode',0,3)
+   number('light_threshold','Light mode prefetch threshold, %',0,100)
+   toggle('reader_prefetch_status','Show next-chapter download in reader')
+   toggle('sync_enabled','Sync reading progress (.sdr)',function()if s.sync_enabled then self.core:flushPending()end end)
+   rows[#rows+1]={icon='info',text=tr('How progress sync works'),callback=function()
+    env.message(tr('Progress can be stored beside books or centrally in KOReader. Cloud sync exports native .sdr data to the Drive folder, visible to everyone with access. With sync disabled, reading stays local.'))
+   end}
+   local modes={farthest='Farthest position',freshest='More recent position',manual='Choose manually'}
+   rows[#rows+1]={icon='info',text=tr('Progress conflicts')..' · '..tr(modes[s.sync_conflict_policy] or modes.farthest),callback=function()
+    local options,picker={}
+    for _,mode in ipairs{'farthest','freshest','manual'}do
+     options[#options+1]={text=tr(modes[mode]),checked=(s.sync_conflict_policy or 'farthest')==mode,callback=function()
+      s.sync_conflict_policy=mode;self:saveSettings();close(picker);reopen()
+     end}
+    end
+    picker=self:menu(tr('Progress conflicts'),options,{icons=true,back=true})
+   end}
+   rows[#rows+1]={icon_file=env.root..'/resources/icons/queue.svg',text=tr('Downloads and sync'),callback=function()self:showQueue()end}
   elseif category=='experimental'then
    title='Experimental'
    rows[#rows+1]={text=tr('Beta features are optional. Cover scanning uses network, battery and metadata-cache space. Unsupported archives are skipped; complete remote CBZ downloads are never used for thumbnails.'),select_enabled=false}
+   toggle('beta_quick_preview','Quick CBZ preview')
    toggle('beta_thumbnails','Chapter thumbnails (beta)',function()if not s.beta_thumbnails then s.beta_auto_scan=false;if self.core.cancelDeepScan then self.core:cancelDeepScan()end end end)
    toggle('beta_auto_scan','Automatically deep scan home (beta)',function()if not s.beta_auto_scan and self.core.cancelDeepScan then self.core:cancelDeepScan()end;if s.beta_auto_scan then s.beta_thumbnails=true;if self.core.deepScan then self.core:deepScan({id=s.home,name=s.home},true)end end end)
    rows[#rows+1]={text=tr('Automatic scan interval')..': '..tostring(s.index_hours or 24)..' '..tr('hours'),callback=function()
@@ -745,47 +907,28 @@ return function(Shelf,env)
    end}
   end
   menu=self:menu(tr(title or category),rows,{icons=true,multiline=true,back=true})
+  if category=='connection'then self.connection_settings=menu end
   return menu
  end
- function Shelf:chooseBooksFolder()
+ function Shelf:chooseBooksFolder(after)
   local path=self.core.storage.books_dir
-  UI():show(require('ui/widget/pathchooser'):new{path=path,select_directory=true,show_files=false,onConfirm=function(chosen)self:runAction(function()local ok,err=self:moveBooks(chosen);if not ok then env.problem(err)end end)end})
+  UI():show(require('ui/widget/pathchooser'):new{path=path,select_directory=true,show_files=false,onConfirm=function(chosen)self:runAction(function()local ok,err=self:moveBooks(chosen,after);if not ok then env.problem(err)end end)end})
  end
- function Shelf:moveBooks(path)
+ function Shelf:moveBooks(path,after)
   if type(path)~='string'or path:sub(1,1)~='/'or path:find('[%z\r\n]')then return false,tr('Enter an absolute path')end
   if self:activeEntry()then return false,tr('Close the book first')end
+  if self.core.archive_removal then return false,tr('Wait for the current storage operation to finish.')end
   local dialog;local visible=false
   local function cancel()self.core.jobs:cancel('relocate')end
   dialog=require('ui/widget/buttondialog'):new{title=tr('Moving documents…'),buttons={{{text=tr('Cancel'),callback=cancel}}}}
   dialog.onClose=function()cancel();return true end
   local ok,err=self.core:relocateBooks(path,function(done,why)
    if visible then UI():close(dialog)end;self.move_dialog=nil
-   if done then self.settings.books_dir=self.core.storage.books_dir;self:saveSettings();env.message(tr('Document folder updated'))
+   if done then self.settings.books_dir=self.core.storage.books_dir;self:saveSettings();if after then after()end;env.message(tr('Document folder updated'))
    elseif why and why.code=='cancelled'then env.message(tr('Move cancelled; the original folder is kept.'))else env.problem(why)end
   end)
   if ok and self.core.relocating then visible=true;self.move_dialog=dialog;UI():show(dialog)end
   return ok,err
- end
- local oldMemory=Shelf.showMemory
- function Shelf:showMemory()
-  local storage=self.core.storage
-  if not storage.diskStats then return oldMemory(self)end
-  local stats=storage:diskStats();local usage=self.core:cache():usage()
-  local function bar(label,value,limit,formatLimit)
-   local text=label..': '..env.bytes(value)
-   if limit then text=text..' / '..formatLimit(limit)end
-   return {label=text,value=limit and math.min(1,value/math.max(1,limit))or nil}
-  end
-  local formatBudget=env.binaryBytes or env.bytes
-  local bars={bar(tr('Disk used'),stats.total and stats.total-(stats.free or 0)or 0,stats.total,env.bytes),
-   bar(tr('Temporary reading cache'),usage.auto,(self.settings.auto_mib or 3072)*1048576,formatBudget),
-   bar(tr('Metadata cache'),usage.meta,(self.settings.meta_mib or 256)*1048576,formatBudget)}
-  local header=require('gdriveshelf/browser').header{width=require('device').screen:getWidth(),title=tr('Storage and cache'),status=tr('Free space')..': '..env.bytes(stats.free),buttons={},bars=bars,close=function()close(self.memory_menu)end,back=function()close(self.memory_menu)end}
-  local original=self.menu;self.menu=function(owner,title,rows,options)
-   table.remove(rows,1);rows[#rows]={text=tr('Document folder')..': '..storage.books_dir,select_enabled=false}
-   local menu=original(owner,title,rows,{header=header,perpage=7,multiline=true});owner.memory_menu=menu;return menu
-  end
-  local ok,err=xpcall(function()oldMemory(self)end,debug.traceback);self.menu=original;if not ok then error(err)end
  end
  local oldResume=Shelf.onResume
  function Shelf:onResume(...)

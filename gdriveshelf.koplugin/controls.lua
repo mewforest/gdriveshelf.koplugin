@@ -32,7 +32,7 @@ return function(Shelf,env)
   if selected.data.error then return string.format(tr('Download needs attention: %s'),name)end
   local text=string.format(tr('Downloading: %s'),name)
   if value then
-   if value.total and value.total>0 then text=string.format('%d%% · %s / %s · %s',math.min(100,math.floor(value.received/value.total*100)),env.bytes(value.received),env.bytes(value.total),name)
+   if value.total and value.total>0 then text=tr('Downloading')..string.format(' · %d%% · %s / %s · %s',math.min(100,math.floor(value.received/value.total*100)),env.bytes(value.received),env.bytes(value.total),name)
    else text=text..' · '..env.bytes(value.received)end
   else text=string.format(tr('Queued: %s'),name)end
   return text
@@ -179,28 +179,59 @@ return function(Shelf,env)
   local index=core:indexStatus()
   if index.running or index.paused then rows[#rows+1]={text=tr('Library indexing')..' · '..tr(indexPhase[index.phase]),callback=function()self:showIndexScreen()end}end
   if core.deep_job then local j=core.deep_job;rows[#rows+1]={text=tr('Scanning covers…')..' '..j.done..'/'..j.total..tr(' · cancel'),callback=function()core:cancelDeepScan();self:showQueue()end}end
+  for id,conflict in pairs(core.state.sync.conflicts)do
+   local pending=core.state.sync.pending[id]
+   local entry=(pending and pending.entry)or core.state.docs[id]
+   if entry then
+    rows[#rows+1]={text=tr('Conflict: ')..entry.name,bold=true,callback=function()self:showConflict(entry)end}
+   end
+  end
+  for id,entry in pairs(core.completed_downloads or {})do
+   if core:cached(id)then
+    rows[#rows+1]={text=string.format(tr('Downloaded %s · Open'),entry.name),callback=function()
+     core.completed_downloads[id]=nil;close(self.queue_menu);self:openEntry(entry)
+    end}
+   else core.completed_downloads[id]=nil end
+  end
   local list={};for id,data in pairs(core.state.downloads or{})do list[#list+1]={id=id,data=data}end
   table.sort(list,function(a,b)return a.data.entry.name<b.data.entry.name end)
   for _,record in ipairs(list)do
    local id,data=record.id,record.data;local value=(core.transfer or{})[id]
    local active=core.jobs.active and core.jobs.active.key=='download:'..id
    local text=(active and tr('Downloading')or tr('Queued'))..' · '..data.entry.name
-   if value then text=text..'\n'..env.bytes(value.received)..(value.total and ' / '..env.bytes(value.total)or'')end
-   if data.error then text=text..'\n'..tr('Download needs attention')end
-   rows[#rows+1]={text=text,callback=function()
-    UI():show(require('ui/widget/buttondialog'):new{title=data.entry.name,buttons={{
-     {text=tr('Open'),callback=function()self:openEntry(data.entry)end},
-     {text=tr('Cancel download'),callback=function()core:cancelDownload(id);self:showQueue()end},
-    }}})
+   local detail,percent
+   if value then
+    local stage
+    stage,detail,percent=self:downloadSummary(data.entry)
+    text=stage..' · '..data.entry.name
+   end
+   if data.error then detail=tr('Download needs attention')end
+   rows[#rows+1]={text=text..(detail and ' · '..detail or ''),list_title=active and text or nil,
+    list_detail=detail,list_progress=percent,callback=function()
+    local dialog
+    dialog=self:transferDialog(data.entry,{
+     {text=tr('Open'),callback=function()close(dialog);close(self.queue_menu);self:openEntry(data.entry)end},
+     {text=tr('Cancel download'),callback=function()close(dialog);core:cancelDownload(id);self:showQueue()end},
+    })
+    self.queue_download={widget=dialog,entry=data.entry}
+    local closed=dialog.onCloseWidget
+    dialog.onCloseWidget=function(widget,...)
+     if self.queue_download and self.queue_download.widget==widget then self.queue_download=nil end
+     if closed then closed(widget,...)end
+    end
+    UI():show(dialog)
    end}
   end
-  for id,pending in pairs(core.state.sync.pending)do local e=pending.entry;rows[#rows+1]={text=tr(core.state.sync.conflicts[id]and'Conflict: 'or'Sync: ')..e.name,callback=function()self:showConflict(e)end}end
+  for id,pending in pairs(core.state.sync.pending)do if not core.state.sync.conflicts[id] then local e=pending.entry
+   local deferred=core.state.sync.deferred and core.state.sync.deferred[id]
+   local text=deferred and string.format(tr('Cloud progress ready on reopen · %s'),e.name)or tr('Sync: ')..e.name
+   rows[#rows+1]={text=text,select_enabled=not deferred,callback=function()self:showConflict(e)end}end end
   for id,pending in pairs(core.folder_metadata and core.folder_metadata.pending or{})do
    local item=folder(core,id);rows[#rows+1]={text=tr(pending.conflict and'Metadata conflict: 'or'Metadata waiting to sync: ')..(core:titleInfo(id).title or item.name),callback=function()if pending.conflict then self:showMetadataConflict(item)else self:editFolderMetadata(item)end end}
   end
   if #rows==1 then rows[#rows+1]={text=tr('No pending tasks'),select_enabled=false}end
   if self.queue_menu and not self.queue_menu._closed then self:replaceMenu(self.queue_menu,rows);return self.queue_menu end
-  self.queue_menu=self:menu(tr('Downloads and sync'),rows,{multiline=true,perpage=7});return self.queue_menu
+  self.queue_menu=self:menu(tr('Downloads and sync'),rows,{multiline=true,decorated=true,perpage=7});return self.queue_menu
  end
  function Shelf:showRecovery(entry)
   local cached=self.core:cached(entry.id);local remote=self.core:remote(entry);local localCopy=snapshot(self.core,entry.id)
@@ -290,12 +321,21 @@ return function(Shelf,env)
   local function button(text,callback)
    return {text=tr(text),height=screen:scaleBySize(38),callback=function()self:runAction(callback)end}
   end
+  local function coverSources()
+   local picker
+   local function pick(label,action)return {text=tr(label),callback=function()close(picker);self:runAction(action)end}end
+   picker=require('ui/widget/buttondialog'):new{title=tr('Cover'),buttons={
+    {pick('Choose cover image',chooseImage)},
+    {pick('First page',function()self:extractCoverForEditor(item,draft)end)},
+    {pick('Choose a page from a volume…',function()self:chooseCoverVolume(item,draft)end)},
+    {pick('Restore automatic cover',function()replaceCover(draft,false);redraw()end)},
+    {pick('Hide cover',function()replaceCover(draft,true);redraw()end)},
+    {{text=tr('Cancel'),callback=function()close(picker)end}},
+   }}
+   UI():show(picker)
+  end
   local rows={
-   {button('Choose cover image',chooseImage)},
-   {button('Use first page (quick)',function()self:extractCoverForEditor(item,draft)end)},
-   {button('Choose a page from a volume…',function()self:chooseCoverVolume(item,draft)end)},
-   {button('Use automatic cover',function()replaceCover(draft,false);redraw()end),
-    button('Hide cover',function()replaceCover(draft,true);redraw()end)},
+   {button('Cover…',coverSources)},
    {button('Cancel',function()close(dialog)end),button('Save',function()
     local ok,err=self.core:saveFolderMetadata(item,draft.values,draft.cover)
     if not ok then env.problem(err);return end
@@ -403,7 +443,7 @@ return function(Shelf,env)
    active=false;self.cover_download=nil
    self.core:cancelDownload(entry.id);close(dialog)
   end
-  dialog=require('ui/widget/buttondialog'):new{title=self:downloadTitle(entry),buttons={{{text=tr('Cancel'),callback=cancel}}}}
+  dialog=self:transferDialog(entry,{{text=tr('Cancel'),callback=cancel}})
   dialog.onClose=function()cancel();return true end
   self.cover_download={entry=entry,widget=dialog}
   UI():show(dialog)
