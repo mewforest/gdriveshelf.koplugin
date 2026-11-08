@@ -11,13 +11,23 @@
 | :---: | :---: | :---: |
 | <a href="docs/screenshots/library-grid-3x2.png"><img src="docs/screenshots/library-grid-3x2.png" width="245" alt="Библиотека манги в три столбца"></a> | <a href="docs/screenshots/background-download.png"><img src="docs/screenshots/background-download.png" width="245" alt="Обложка, кнопка продолжения, главы и фоновая загрузка"></a> | <a href="docs/screenshots/storage.png"><img src="docs/screenshots/storage.png" width="245" alt="Память и кэш со шкалами и командами очистки"></a> |
 
-## Начало работы
+## Установка
+
+**Вариант 1 · Через AppStore**
+
+1. Откройте [AppStore](https://github.com/omer-faruq/appstore.koplugin) в KOReader и найдите `gdriveshelf`. Если плагина ещё нет в вашем каталоге, в настройках AppStore выберите **Install plugin from URL**. Введите `mewforest` в поле владельца и `gdriveshelf.koplugin` в поле имени репозитория.
+2. Нажмите **Install plugin**, выберите релизный файл `gdriveshelf.koplugin-<версия>.zip` и перезапустите KOReader.
+
+**Вариант 2 · Вручную**
 
 1. Скачайте `gdriveshelf.koplugin-<версия>.zip` со [страницы релизов](../../releases).
-2. Скопируйте папку `gdriveshelf.koplugin` в `koreader/plugins/` и перезапустите KOReader.
-3. Первое подключение удобнее пройти на компьютере. Скачайте отдельный файл `gdriveshelf-authorize.py` из релиза и откройте [инструкцию для Windows, macOS или Linux](docs/authentication.ru.md). Графическая утилита откроет вход в браузере и предложит сохранить JSON. В инструкции есть варианты для терминала и для Android через Termux.
-4. Откройте **Google Drive Shelf** в правой вкладке меню KOReader. Выберите созданный файл `gdriveshelf-credentials.json` или введите путь к нему. На Android для переноса подойдёт папка «Загрузки». Храните JSON в приватном месте.
-5. Найдите свою библиотеку. Долгим тапом по папке выберите **«Сделать домашней папкой»**. Тапните книгу или главу, чтобы начать чтение.
+2. Распакуйте папку `gdriveshelf.koplugin` в `koreader/plugins/` и перезапустите KOReader.
+
+## Первоначальная настройка
+
+1. Первое подключение удобнее пройти на компьютере. Скачайте отдельный файл `gdriveshelf-authorize.py` из релиза и откройте [инструкцию для Windows, macOS или Linux](docs/authentication.ru.md). Графическая утилита откроет вход в браузере и предложит сохранить JSON. В инструкции есть варианты для терминала и для Android через Termux.
+2. Откройте **Google Drive Shelf** в правой вкладке меню KOReader. Выберите созданный файл `gdriveshelf-credentials.json` или введите путь к нему. На Android для переноса подойдёт папка «Загрузки». Храните JSON в приватном месте.
+3. Найдите свою библиотеку. Долгим тапом по папке выберите **«Сделать домашней папкой»**. Тапните книгу или главу, чтобы начать чтение.
 
 ## Чтение и прогресс
 
@@ -92,7 +102,7 @@
 <details>
 <summary>Обновление через AppStore</summary>
 
-Добавьте `https://github.com/mewforest/gdriveshelf.koplugin` в [AppStore](https://github.com/omer-faruq/appstore.koplugin). Если плагин установлен вручную, один раз выберите **Match repository**. Установите релизный файл `gdriveshelf.koplugin-<версия>.zip` и перезапустите KOReader. Настройки, авторизация и прогресс сохранятся.
+Если плагин установлен вручную, один раз выберите в AppStore **Match repository**, чтобы связать установку с `mewforest/gdriveshelf.koplugin`. При обновлении выбирайте релизный файл `gdriveshelf.koplugin-<версия>.zip` и перезапускайте KOReader. Настройки, авторизация и прогресс сохранятся.
 
 </details>
 

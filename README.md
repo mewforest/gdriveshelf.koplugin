@@ -11,13 +11,23 @@ Google Drive Shelf is an unofficial KOReader plugin. It downloads a complete doc
 | :---: | :---: | :---: |
 | <a href="docs/screenshots/library-grid-3x2-en.png"><img src="docs/screenshots/library-grid-3x2-en.png" width="245" alt="Manga library in a three-column grid"></a> | <a href="docs/screenshots/background-download-en.png"><img src="docs/screenshots/background-download-en.png" width="245" alt="Comic folder with a cover, Continue button, chapters and background download"></a> | <a href="docs/screenshots/storage-en.png"><img src="docs/screenshots/storage-en.png" width="245" alt="Storage and cache with usage bars and cleanup actions"></a> |
 
-## Get Started
+## Installation
+
+**Option 1 · AppStore**
+
+1. Open [AppStore](https://github.com/omer-faruq/appstore.koplugin) in KOReader and search for `gdriveshelf`. If it’s missing from your catalog, open the AppStore settings and choose **Install plugin from URL**. Enter `mewforest` as the owner and `gdriveshelf.koplugin` as the repository name.
+2. Select **Install plugin**, choose the release asset `gdriveshelf.koplugin-<version>.zip` and restart KOReader.
+
+**Option 2 · Manual installation**
 
 1. Download `gdriveshelf.koplugin-<version>.zip` from [Releases](../../releases).
-2. Copy the enclosed `gdriveshelf.koplugin` folder into `koreader/plugins/` and restart KOReader.
-3. For the first connection, use a computer. Download the separate `gdriveshelf-authorize.py` release asset, follow the [Google Drive setup guide](docs/authentication.md) for Windows, macOS or Linux, and save the credentials JSON. The graphical helper opens your browser for sign-in. The guide also covers terminal use and an Android-only Termux option.
-4. Open **Google Drive Shelf** from KOReader’s right-hand menu tab. Import the generated `gdriveshelf-credentials.json` using the file picker or enter its path. Android’s Downloads folder works for the transfer. Keep the credentials file private.
-5. Long-press your library folder and choose **Set as home folder**. Tap a book or chapter to read it.
+2. Extract the enclosed `gdriveshelf.koplugin` folder into `koreader/plugins/` and restart KOReader.
+
+## First-time setup
+
+1. For the first connection, use a computer. Download the separate `gdriveshelf-authorize.py` release asset, follow the [Google Drive setup guide](docs/authentication.md) for Windows, macOS or Linux, and save the credentials JSON. The graphical helper opens your browser for sign-in. The guide also covers terminal use and an Android-only Termux option.
+2. Open **Google Drive Shelf** from KOReader’s right-hand menu tab. Import the generated `gdriveshelf-credentials.json` using the file picker or enter its path. Android’s Downloads folder works for the transfer. Keep the credentials file private.
+3. Long-press your library folder and choose **Set as home folder**. Tap a book or chapter to read it.
 
 ## Reading and progress
 
@@ -92,7 +102,7 @@ The plugin targets the KOReader 2026.07 API. See [validation](docs/validation.md
 <details>
 <summary>Update with AppStore</summary>
 
-Add `https://github.com/mewforest/gdriveshelf.koplugin` in [AppStore](https://github.com/omer-faruq/appstore.koplugin). For a manual installation, use **Match repository** once. Choose the release asset `gdriveshelf.koplugin-<version>.zip` and restart KOReader. Settings, authorization and reading progress are preserved.
+If you installed manually, use **Match repository** in AppStore once to link the existing installation to `mewforest/gdriveshelf.koplugin`. Choose the release asset `gdriveshelf.koplugin-<version>.zip` when updating and restart KOReader. Settings, authorization and reading progress are preserved.
 
 </details>
 
