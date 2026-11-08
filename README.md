@@ -7,138 +7,102 @@
 
 Google Drive Shelf is an unofficial KOReader plugin. It downloads a complete document before opening it with KOReader's native reader, so your usual reading modes, cropping, zoom and end-of-document actions remain available. English and Russian interfaces follow KOReader's language setting.
 
-| Library | Comic folder and background download | Storage and cache |
+| Library | Comic Folder | Storage and cache |
 | :---: | :---: | :---: |
 | <a href="docs/screenshots/library-grid-3x2-en.png"><img src="docs/screenshots/library-grid-3x2-en.png" width="245" alt="Manga library in a three-column grid"></a> | <a href="docs/screenshots/background-download-en.png"><img src="docs/screenshots/background-download-en.png" width="245" alt="Comic folder with a cover, Continue button, chapters and background download"></a> | <a href="docs/screenshots/storage-en.png"><img src="docs/screenshots/storage-en.png" width="245" alt="Storage and cache with usage bars and cleanup actions"></a> |
 
-## Get started
+## Get Started
 
-1. Download **`gdriveshelf.koplugin-<version>.zip`** from [Releases](../../releases).
-2. Copy the enclosed **`gdriveshelf.koplugin`** folder into `koreader/plugins/` and restart KOReader.
-3. Follow the [authorization guide](docs/authentication.md), then choose the generated credentials JSON on the plugin's connection screen. Android's Downloads folder is fine.
-4. Browse to your library and long-press its folder to **Set as home folder**.
-5. Tap a document to download and read it. Use the offline-download actions to keep files indefinitely.
+1. Download `gdriveshelf.koplugin-<version>.zip` from [Releases](../../releases).
+2. Copy the enclosed `gdriveshelf.koplugin` folder into `koreader/plugins/` and restart KOReader.
+3. For the first connection, use a computer. Download the separate `gdriveshelf-authorize.py` release asset, follow the [Google Drive setup guide](docs/authentication.md) for Windows, macOS or Linux, and save the credentials JSON. The graphical helper opens your browser for sign-in. The guide also covers terminal use and an Android-only Termux option.
+4. Open **Google Drive Shelf** from KOReader’s right-hand menu tab. Import the generated `gdriveshelf-credentials.json` using the file picker or enter its path. Android’s Downloads folder works for the transfer. Keep the credentials file private.
+5. Long-press your library folder and choose **Set as home folder**. Tap a book or chapter to read it.
 
-The installation ZIP contains only the plugin folder. The separate **`gdriveshelf-authorize.py`** release asset runs on your computer with Python 3 and your own Google OAuth **Desktop app** client:
+## Reading and progress
 
-```sh
-python3 gdriveshelf-authorize.py --client /path/to/client.json --output /path/to/gdriveshelf-credentials.json
-```
+**Continue reading** opens your last chapter or the next unopened one if you finished it. KOReader opens books and comics in its own reader, with its usual zoom, cropping and end-of-document options. To advance automatically, select **End of document action → Open next file** in KOReader.
 
-Import the **resulting credentials file**, not the OAuth client JSON. It contains private tokens: never commit it or attach it to an issue.
+Cloud sync is on by default. It saves native `.sdr` reading progress alongside your books on Drive, where anyone with access to the folder can see it. The plugin works with all KOReader local progress storage modes. Turn off **Reading and sync → Sync reading progress (.sdr)** to keep progress on the device.
 
-## Updates with AppStore
+<details>
+<summary>Sync conflicts and restoring progress</summary>
 
-After this repository is public, [AppStore](https://github.com/omer-faruq/appstore.koplugin) can install and update the plugin on your reader. Add `mewforest/gdriveshelf.koplugin` by repository URL. For an existing manual installation, use AppStore's **Match repository** action once. Choose the release asset **`gdriveshelf.koplugin-<version>.zip`**, then restart KOReader after updating. Do not choose GitHub's source archives or the development branch for stable updates.
+When two devices save different progress for the same version of a book, the default uses the farther position if only the position differs. You can choose the more recent position or resolve conflicts manually. Differences such as bookmarks or read status require a choice under **Downloads and sync**. Use **Recover reading progress…** to restore a cloud copy or local snapshot while the book is closed.
 
-The installed folder name stays `gdriveshelf.koplugin`. Authorization, settings, readable book paths, reading progress, history and pending uploads live outside the installed code and survive updates; no new Google sign-in is needed. Repository discovery and public downloading become available when the owner makes it public. The plugin does not change repository visibility or include its own updater.
-
-## A library you can reach quickly
-
-Open **Google Drive Shelf** directly from KOReader's right-hand menu tab in the file browser or reader. You can also select it in **Start with**, or assign **Google Drive Shelf: open home folder**, **history**, or **current document folder** under the gesture editor's **General** actions.
-
-The folder toolbar separates navigation, refresh, sorting, display mode and actions. Folder and file sorting are independent and persist across restarts. Folder pins stay above other items; optionally, known folders follow them. Pinning a folder to the top does **not** download it.
-
-New installations use a **3×2 folder grid** and a **chapter list**. Chapter tiles use their own grid preset. An expanded comic header takes the space of one row, and collapsing it restores the full grid.
-
-| Folder list | Settings |
-| --- | --- |
-| ![Folders with cached information](docs/screenshots/titles-en.png) | ![Grouped plugin settings](docs/screenshots/settings-en.png) |
-
-Long-press a file or folder for downloads and other actions. The selection mode lets you keep several files offline at once. Folder cards show the downloaded count and size at the upper left, with the known total count and size at the upper right. Folder and chapter grids have independent layout presets. Containers show a subfolder count instead. Confirmed empty folders are hidden by default; unknown folders remain visible. A rough opened-chapter bar summarizes reading activity. Unknown counts remain unknown; a matching `.sdr` indicates an opened document, not a completed chapter.
-
-| Folder actions | Document information |
-| --- | --- |
-| ![Folder actions and offline downloads](docs/screenshots/library-actions-en.png) | ![Cover and descriptive metadata](docs/screenshots/manga-info-en.png) |
-
-Plugin history groups comics by folder and keeps ordinary books as individual entries. CBZ/CBR/CB7 are detected as comics; other formats are books. A folder's **Content type** can override this, including for PDF comics. History survives archive eviction.
+</details>
 
 ## Downloads and offline reading
 
-Opening an uncached document shows a download dialog with its name, transferred bytes and verification stage. **Cancel** stops the request. **In background without opening** moves it to the catalog activity row. When the file is ready, tap **Open** in the notification or queue. Transfer details include elapsed time and an estimate when enough bytes have arrived. The same feedback appears when the next chapter is still downloading at the end of a document. A compact activity row in the catalog opens **Downloads and sync**, where background jobs remain visible. Prefetch supports 0–3 following files; downloads run sequentially.
+Long-press files or folders to save them for a trip. Turn on **Offline mode** to browse the cached library and read downloaded books. When you reconnect, queued progress sync resumes. KOReader needs to stay open for background work.
 
-Before travelling, save the folders you need and enable **Offline mode**. Cached files open without a server request. Going online resumes pending progress uploads. KOReader must remain running for background work.
+**In background without opening** keeps a download running and offers **Open** when it finishes. Tap the activity row to see the queue. In **Storage and cache**, **Choose downloads to remove** frees space by folder or file and preserves reading progress.
 
-| Storage pool | Default budget | Removal |
-| --- | --- | --- |
-| Temporary reading cache | 3072 MiB | Automatic LRU |
-| Offline downloads | No separate limit | Manual |
-| Covers, listings and previews | 256 MiB | Automatic LRU |
+<details>
+<summary>Cache limits, book paths and moving downloads</summary>
 
-The plugin keeps a **512 MiB free-space reserve** and protects active documents. Allow enough temporary-cache space for the open and next archives together. Use **Choose downloads to remove** to find large titles and remove selected offline or temporary archives. Evicting archives preserves reading metadata, snapshots and pending sync.
+Temporary reading downloads default to 3072 MiB and metadata to 256 MiB. Offline downloads stay until you remove them. The plugin reserves 512 MiB of free space and protects active documents. Allow space for the current book and prefetched chapters together.
 
-Documents use readable paths such as **`Books/Series name/01.cbz`**. Duplicate or unsafe names receive a short identifier when needed. Offline pinning keeps the same path. Choose another document folder under **Downloads and storage**; moving files is cancellable and journalled. Original sidecars remain as recovery copies. Versions through 0.1.4 used a different archive layout: those archive paths are not migrated or reused; redownload documents as needed. Saved snapshots and pending sync are retained.
+Books use paths like `Books/Series name/01.cbz`, with a short identifier when a name conflicts. Offline saving keeps the same path. Change the root under **Downloads and storage → Document folder**. You can cancel a move, and original sidecars stay available for recovery. Archive paths from 0.1.4 and earlier are not migrated. Redownloading those books preserves saved snapshots and pending sync.
 
-## Light mode
+</details>
 
-Switch on **Light mode** in the plugin settings. It pauses automatic index checks, previews and detailed page-by-page progress lookups. Prefetch is off by default in this mode. Set a separate chapter count and threshold under **Reading and sync**. Opening a folder uses its saved listing for up to 15 minutes. Use **Refresh** for a fresh listing and to send queued reading progress, or return to the catalog after reading to send it. The subtitle shows when the folder was last checked. Manual downloads, previews and indexing remain available.
+## Screenshot Library
 
-## Covers, metadata and indexing
+| Folder list | Settings |
+| --- | --- |
+| ![Folders in list view](docs/screenshots/titles-en.png) | ![Plugin settings](docs/screenshots/settings-en.png) |
 
-Adjacent `cover.jpg`, `cover.png` or `cover.webp`, Kotatsu Redo `index.json` and Mylar/Komga `series.json` can supply covers, names, authors and descriptions. Cover and descriptive-metadata downloads have separate switches. Service files and `.sdr` folders are hidden by default.
-
-The comic-folder header shows the cover, description, known document totals and the share of CBZ chapters opened. Collapse it temporarily to see more chapters. **Continue reading** uses recent reading history or the latest matching native sidecar. If that chapter is complete, the button advances to the next unopened one. Long-press a chapter to change its read status. Downloaded CBZ, EPUB, PDF and supported CBR documents can generate local covers. RAR covers can take longer, especially with solid archives. Download a CBR before choosing a cover from it. A folder without its own cover uses the first available cached-document preview in natural filename order. CB7 cover extraction is not guaranteed by the current runtime.
-
-**Edit folder information** changes the title, description or cover. Edits take effect locally, queue safely while offline, and sync to a separate versioned `gdriveshelf.json` plus immutable cover files. Original `index.json`, `series.json`, `cover.jpg` and native progress are preserved. Conflicting edits retain both versions for a choice under **Downloads and sync**. The editor previews the current cover and lets you import an image, reset to the automatic cover, hide it, or choose a page from a downloaded volume. The quick first-page action can also read a remote CBZ through bounded byte ranges.
+| Folder actions | Document information |
+| --- | --- |
+| ![Folder actions menu](docs/screenshots/library-actions-en.png) | ![Cover and description dialog](docs/screenshots/manga-info-en.png) |
 
 | Chapter tiles | Cover editor | Page gallery |
 | --- | --- | --- |
-| ![Chapter tiles with a cached cover](docs/screenshots/chapters-stable-en.png) | ![Metadata editor with current cover](docs/screenshots/metadata-editor-en.png) | ![Choosing a cover page](docs/screenshots/cover-gallery-en.png) |
+| ![Chapters in tile view](docs/screenshots/chapters-stable-en.png) | ![Folder information and cover editor](docs/screenshots/metadata-editor-en.png) | ![Choosing a cover page](docs/screenshots/cover-gallery-en.png) |
 
-Optional **Index home folder recursively** asks for explicit consent and scans the selected home tree, excluding SDR contents. Documents are never downloaded for this catalog. After the first pass, ordinary refresh uses the [Drive change log](https://developers.google.com/workspace/drive/api/guides/manage-changes), with checks on catalog entry and wake limited to once per 30 seconds; manual Refresh checks immediately. **Reindex library** opens a progress screen for a repair pass. Pause it and resume from the saved checkpoint, or let it continue in the background. No shared cloud tree manifest is created. Covers and descriptions are separate low-priority tasks.
+The screenshots show a fictional library with manga illustrations generated for the demo.
 
-```mermaid
-flowchart LR
-    Drive[Google Drive] <--> Provider[Drive provider]
-    Provider <--> Changes[Scoped Drive change log]
-    Changes <--> Catalog[Local recursive catalog]
-    Provider --> Books[Readable Books folders]
-    Provider --> Metadata[Covers and metadata LRU]
-    Catalog --> UI[List or tiles]
-    UI --> Edits[Offline metadata outbox]
-    Edits --> Provider
-    Books --> Reader[Native KOReader]
-    Reader --> Queue[Pending native .sdr sync]
-    Queue --> Provider
-```
+## Settings and help
 
-## Reading progress
+- **Catalog and appearance** changes list and tile layouts, sorting and the comic header. Long-press a folder to pin it or edit its title, description or cover. **Content type** can treat a folder of PDFs as comics.
+- **Connection and startup** shows the current startup choice. Use KOReader’s **Start with** menu to open Google Drive Shelf at startup. Under **General** in the gesture editor, assign a shortcut to the home folder, history or current document’s folder.
+- **Light mode** reduces automatic indexing, previews and progress lookups. Refresh manually when you want fresh data. Adjust prefetch under **Reading and sync**. It starts at one following chapter in normal mode and zero in Light mode.
 
-Native **End of document action → Open next file** advances inside the current folder; **Ask** keeps KOReader's popup. Comic prefetch follows the saved file order. Prefetching the next ordinary book has its own switch and is off by default.
+<details>
+<summary>Covers, indexing and experimental features</summary>
 
-Cloud sync writes native `<book>.sdr/metadata.<extension>.lua` beside documents on Drive. KOReader may store local metadata beside books, centrally, or by content hash; a local adjacent `.sdr` is **not required**. Other KOReader installations can use the cloud sidecars once the book and sidecar are available as ordinary local files. Everyone with access to that Drive folder can see those sidecars. Disabling sync keeps reading local.
+The plugin can use `cover.jpg`, `cover.png`, `cover.webp`, Kotatsu Redo’s `index.json` and Mylar/Komga’s `series.json`. Folder edits sync separately in `gdriveshelf.json` and cover files. A folder without a cover can use a preview from a downloaded chapter. Download a CBR before choosing a cover page from it.
 
-Downloaded Lua metadata is parsed as data, never executed. Conflicts preserve both versions. The default chooses the farther reading position when the verified file is identical and only the position differs. **Reading and sync** also offers a more-recent policy or manual selection. Open a conflict to compare pages, percentages, status and dates. Remote progress does not unexpectedly move an already-open book. Ambiguous duplicate names or changed book versions may require a manual decision.
+Recursive home-folder indexing is opt-in. After the first scan, it follows the [Drive change log](https://developers.google.com/workspace/drive/api/guides/manage-changes). **Reindex library** runs a new scan and can resume from a checkpoint. The scan skips the contents of `.sdr` folders.
 
-## Optional experiments
+Quick CBZ preview and remote chapter thumbnails are optional. They use bounded ZIP32 byte-range requests and leave reading progress alone. Quick preview reads up to 32 MiB and less than the full archive.
 
-All experimental features start **off**:
+</details>
 
-- **Quick CBZ preview** opens a chapter as images from its long-press menu. A remote session reads up to 32 MiB and always less than the full archive. It leaves reading progress and offline downloads alone.
-- **Chapter thumbnails** enables remote CBZ previews and manual recursive cover scanning. File tiles and existing local previews also work with this experiment disabled. An optional separate switch enables automatic scanning of the home library.
-- Remote previews use bounded HTTP ranges to read ZIP32 directories and the first image. Store and Deflate are supported; ZIP64, encrypted, damaged or oversized archives are skipped. No complete remote CBZ is downloaded for a preview, including across combined ranges. Already-cached archives are read locally.
+<details>
+<summary>Troubleshooting and compatibility</summary>
 
-Limits per preview: **1 MiB ZIP directory, 8 MiB transferred, 16 MiB expanded image and 16 megapixels**. Generated images share the metadata LRU. Scanning excludes `.sdr`, supports cancellation and yields to reading. It can use a first-chapter image when no folder cover exists. Preview caches stay local.
+Check **Downloads and sync** for queued work, retries and conflicts. If the plugin asks for authorization again, see the [connection guide](docs/authentication.md#renew-or-revoke-access). Enable **Connection and startup → Diagnostics** to export a log for a bug report. The journal is off by default and excludes file names, paths and credentials.
 
-## Troubleshooting
+The plugin targets the KOReader 2026.07 API. See [validation](docs/validation.md) for macOS and Android test details. If you [report an issue](../../issues), include your KOReader version and steps to reproduce it.
 
-**Offline mode**, **Waiting before retry**, **Waiting for the device to wake**, and **Authorization is required** describe different states. Transient network/server failures retain queued downloads while retrying. A damaged preview or local-file error does not pause unrelated network work. In **Downloads and sync**, retry pending tasks or inspect conflicts; use **Recover reading progress…** only to restore a downloaded cloud copy or the last local snapshot, with the document closed.
+</details>
 
-Optional **Connection and startup → Diagnostics** records sanitized operation/status counters and queue transitions in the data folder `gdriveshelf/logs`, outside plugin code. Logging starts off and retains at most **2 MiB** across two files. File names, IDs, paths, URLs, credentials and response contents are excluded. Export or clear the log from the same screen. Include an exported log and reproduction steps when reporting a fault.
+<details>
+<summary>Update with AppStore</summary>
 
-## Compatibility and development
+Add `https://github.com/mewforest/gdriveshelf.koplugin` in [AppStore](https://github.com/omer-faruq/appstore.koplugin). For a manual installation, use **Match repository** once. Choose the release asset `gdriveshelf.koplugin-<version>.zip` and restart KOReader. Settings, authorization and reading progress are preserved.
 
-Targets the **KOReader 2026.07 API**. Checked with official macOS ARM64 and Android ARM64 builds on an Android 11 emulator. Physical E-Ink refresh behavior remains device-specific. See [validation](docs/validation.md) for evidence and reproducible checks.
+</details>
 
-Google Docs/Sheets/Slides export and a standalone Android background-download service are not included. HTTPS verification stays enabled; a Mozilla CA bundle is bundled.
+<details>
+<summary>Develop and build</summary>
 
-```sh
-make test
-make package VERSION=0.1.7
-```
+Run `make test` or `make package VERSION=0.1.0` from the source checkout. CI publishes a plugin-only ZIP, the standalone authorization helper and their SHA-256 checksums.
 
-CI checks pull requests and automatically publishes versioned plugin-only archives and SHA-256 checksums on pushes to `master`. Include your KOReader version and reproduction steps in [issues](../../issues), with credentials removed.
+</details>
 
 ## License
 
-Original code: [MIT](LICENSE). Mozilla CA bundle: [MPL 2.0](gdriveshelf.koplugin/CA-BUNDLE.md). The screenshots use a fictional library with artwork created for the demo.
+Code is [MIT](LICENSE). The bundled Mozilla CA list is [MPL 2.0](gdriveshelf.koplugin/CA-BUNDLE.md).

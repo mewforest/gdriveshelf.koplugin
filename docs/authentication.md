@@ -2,7 +2,7 @@
 
 # Connect Google Drive
 
-GDriveShelf uses your own Google OAuth **Desktop app** client. The authorization helper needs Python 3 with its standard library and a desktop browser. It has been tested on macOS. You can authorize on a computer and transfer the resulting JSON to your reader.
+GDriveShelf uses your own Google OAuth **Desktop app** client. On a computer, the graphical helper opens Google sign-in in your browser and saves a JSON file for import on your reader.
 
 ## 1. Create a Desktop app client
 
@@ -13,23 +13,74 @@ GDriveShelf uses your own Google OAuth **Desktop app** client. The authorization
 
 Use the downloaded Desktop client JSON, which contains an `installed` configuration. A web application client or service-account key will not work with this helper. See Google’s [OAuth guide for desktop apps](https://developers.google.com/identity/protocols/oauth2/native-app) for the project and consent settings.
 
-## 2. Authorize in your browser
+## 2. Sign in and save the credentials
 
-From a source checkout, run:
+Download [gdriveshelf-authorize.py](https://github.com/mewforest/gdriveshelf.koplugin/releases/latest/download/gdriveshelf-authorize.py) from the release. Open a terminal in the download folder and use the command for your system.
 
-```sh
-python3 tools/authorize.py \
-  --client /path/to/client.json \
-  --output /path/to/gdriveshelf-credentials.json
+| System | Command |
+| --- | --- |
+| Windows (PowerShell) | `py -3 .\gdriveshelf-authorize.py` |
+| macOS or Linux | `python3 ./gdriveshelf-authorize.py` |
+
+On Windows, try `python` instead of `py -3` if that is how you launch Python 3. The helper uses Python’s standard Tkinter module. Some Linux distributions package Tk support separately, for example as `python3-tk` on Debian or Ubuntu.
+
+1. Select **Choose client JSON…** and open the Desktop client JSON from Google Cloud.
+2. Select **Sign in with Google**, choose your account in the system browser and review the permissions. You enter your Google password only on Google’s sign-in page.
+3. Return to the helper and save `gdriveshelf-credentials.json` in a private folder.
+
+| Choose the client JSON | Client selected, ready to sign in |
+| :---: | :---: |
+| <a href="screenshots/authorize-desktop-choose.png"><img src="screenshots/authorize-desktop-choose.png" width="365" alt="Choose the client JSON"></a> | <a href="screenshots/authorize-desktop-ready.png"><img src="screenshots/authorize-desktop-ready.png" width="365" alt="Client selected, ready to sign in"></a> |
+
+The helper requests full Google Drive access (`https://www.googleapis.com/auth/drive`) so the plugin can read an existing library and sync native `.sdr` progress beside books. This sign-in does not change any files on Drive.
+
+<details>
+<summary>Use the terminal without a graphical window</summary>
+
+Windows (PowerShell):
+
+```powershell
+py -3 .\gdriveshelf-authorize.py --client ".\client.json" --output ".\gdriveshelf-credentials.json"
 ```
 
-For an installed release, download [gdriveshelf-authorize.py](https://github.com/mewforest/gdriveshelf.koplugin/releases/latest/download/gdriveshelf-authorize.py) separately and use that filename instead of `tools/authorize.py`. The plugin ZIP contains only the installable plugin folder.
+macOS or Linux:
 
-The helper opens your system browser. Sign in on Google’s website, review the permissions, and approve access. It does not ask for your Google password. Authorization retrieves tokens and your Drive account identifier; it does not change your Drive files.
+```sh
+python3 ./gdriveshelf-authorize.py --client "./client.json" --output "./gdriveshelf-credentials.json"
+```
 
-The requested scope is **`https://www.googleapis.com/auth/drive`**, which grants broad read and write access to Drive. GDriveShelf needs access to existing library files and permission to create and update native `.sdr` folders beside them. The narrower `drive.file` scope does not provide access to an arbitrary existing library. Choose a Google account you are comfortable granting this access to.
+From a source checkout, use `tools/authorize.py` in place of the release filename. Both modes use PKCE S256 and a temporary callback on `127.0.0.1`. The browser step times out after 180 seconds. Add `--timeout 300` if you need more time. Keep the callback URL private.
 
-The helper uses PKCE S256, a random `state`, and a temporary callback listener bound only to `127.0.0.1` on an available port. The default browser timeout is 180 seconds; add `--timeout 300` if you need longer. If consent is declined or times out, rerun the command. Keep the callback URL private.
+</details>
+
+<details>
+<summary>Android only: authorize with Termux</summary>
+
+This is an alternative if you have no computer. Install [Termux](https://github.com/termux/termux-app#installation) and create the same **Desktop app** OAuth client in Google Cloud. Save its downloaded JSON as `client.json` in Android’s Downloads folder. Use a regular browser for Google sign-in.
+
+Run `termux-setup-storage`, grant storage access and return to Termux. Once `~/storage/downloads` is available, paste this block:
+
+```sh
+pkg install python curl coreutils &&
+mkdir -p "$HOME/gdriveshelf-auth" &&
+cd "$HOME/gdriveshelf-auth" &&
+curl -fsSLO https://github.com/mewforest/gdriveshelf.koplugin/releases/latest/download/gdriveshelf-authorize.py &&
+curl -fsSLO https://github.com/mewforest/gdriveshelf.koplugin/releases/latest/download/gdriveshelf-authorize.py.sha256 &&
+sha256sum -c gdriveshelf-authorize.py.sha256 &&
+python ./gdriveshelf-authorize.py --termux \
+  --client "$HOME/storage/downloads/client.json" \
+  --output "$HOME/gdriveshelf-auth/gdriveshelf-credentials.json"
+```
+
+Leave Termux running while Google opens in the browser. After a successful sign-in, copy the private output to Downloads for import in KOReader:
+
+```sh
+cp -i "$HOME/gdriveshelf-auth/gdriveshelf-credentials.json" "$HOME/storage/downloads/"
+```
+
+Delete the shared copy after import. If Android blocks direct Downloads access, use a file manager with Android’s system file picker and the **Termux** location, if available, to move the two files across. Pass the local path of the client JSON to `--client`. If the browser cannot return to the local callback, use the computer method.
+
+</details>
 
 ## 3. Import into KOReader
 
@@ -40,9 +91,11 @@ The helper uses PKCE S256, a random `state`, and a temporary callback listener b
 
 Downloads is a suitable location; the file does not belong in the plugin folder. On Android the usual path is `/storage/emulated/0/Download/gdriveshelf-credentials.json`. The picker starts at KOReader's home folder. You can also choose **Enter JSON file path**. If KOReader cannot access the file, check its storage permission in Android settings.
 
-The generated JSON contains the OAuth client configuration, access and refresh tokens, expiry, scope, a stable `account_id` based on Drive’s `user.permissionId`, and the account email for display. The helper saves it atomically with owner-only permissions (`0600`) and does not print tokens. The plugin keeps a private local copy and saves refreshed credentials there.
+The generated JSON contains the OAuth client configuration, access and refresh tokens, expiry, scope, a stable `account_id` based on Drive’s `user.permissionId`, and the account email for display. The helper saves it atomically and does not print tokens. On POSIX it sets mode `0600`. On Windows, save it in a folder private to your user account. The plugin keeps a private local copy and saves refreshed credentials there.
 
 Do not commit either JSON file, include them in plugin archives, attach them to issues, or paste them into logs or chats. Anyone with the generated credentials may be able to access your Drive.
+
+<img src="screenshots/connect-drive-en.png" width="340" alt="KOReader connection screen with file picker and manual path options">
 
 ## Renew or revoke access
 

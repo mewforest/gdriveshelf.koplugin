@@ -100,5 +100,36 @@ class AuthorizeTests(unittest.TestCase):
         with self.assertRaises(auth.AuthorizationError):
             auth.credentials_from_response({'access_token': 'a', 'refresh_token': 'r', 'expires_in': 3600, 'scope': 'https://www.googleapis.com/auth/drive.file'}, {'client_id': 'c'})
 
+    def test_desktop_authorization_opens_gui_with_optional_client(self):
+        with patch.object(auth, 'run_gui', return_value=0) as gui:
+            self.assertEqual(auth.main([]), 0)
+            gui.assert_called_once_with(None, 180)
+            gui.reset_mock()
+            self.assertEqual(auth.main(['--gui', '--client', 'desktop.json']), 0)
+            gui.assert_called_once_with(Path('desktop.json'), 180)
+
+    def test_graphical_authorization_can_choose_account_and_defer_saving(self):
+        with patch.object(auth, 'CallbackServer') as listener, \
+                patch.object(auth.webbrowser, 'open', return_value=True) as browser, \
+                patch.object(auth, 'request_json', side_effect=[
+                    {'access_token': 'access', 'refresh_token': 'refresh', 'expires_in': 3600},
+                    {'user': {'permissionId': 'stable-id'}},
+                ]), patch.object(auth, 'save_credentials') as save:
+            callback = listener.return_value.__enter__.return_value
+            callback.redirect_uri = 'http://127.0.0.1:4321/callback'
+            callback.wait.return_value = 'code'
+            result = auth.request_credentials({'client_id': 'client'}, select_account=True)
+            query = parse_qs(urlsplit(browser.call_args.args[0]).query)
+            self.assertEqual(set(query['prompt'][0].split()), {'consent', 'select_account'})
+            self.assertEqual(result['account_id'], 'stable-id')
+            save.assert_not_called()
+
+    def test_termux_opens_url_without_webbrowser(self):
+        url = 'https://accounts.google.com/o/oauth2/v2/auth?state=test&code_challenge=pkce'
+        with patch.object(auth, 'webbrowser', None), patch.object(auth, 'subprocess') as process:
+            process.run.return_value.returncode = 0
+            self.assertTrue(auth.open_browser(url, termux=True))
+            self.assertEqual(process.run.call_args.args[0], ['termux-open-url', url])
+
 if __name__ == '__main__':
     unittest.main()
