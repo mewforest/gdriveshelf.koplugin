@@ -370,7 +370,8 @@ return function(Core)
   for _,entry in ipairs(entries or {})do
    if entry.parent_id==parent and Library.supported(entry) then books[#books+1]=entry end
   end
-  books=Library.ordered(books,'natural',false,self.natural)
+  local numbers=self:importedMetadata(self:cachedList(parent)).chapter_numbers
+  books=Library.ordered(books,'natural',false,self.natural,numbers)
   local sidecars=Library.matchedSidecars(entries,parent)
   local opened={}
   local recent,lastSidecar,lastLocal,recentAt

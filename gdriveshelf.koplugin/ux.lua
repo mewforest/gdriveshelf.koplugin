@@ -54,7 +54,7 @@ return function(Shelf,env)
   self:saveSettings()
   self:requestBrowserRefresh(false)
  end
- function Shelf:orderedEntries(entries)
+ function Shelf:orderedEntries(entries,chapter_numbers)
   local folders,files={},{}
   local downloads
   self.folder_facts=self.folder_facts or {}
@@ -77,12 +77,12 @@ return function(Shelf,env)
    else files[#files+1]=entry end
   end
   local result=Catalog.order(folders,self.settings.title_sort or 'natural',self.settings.title_reverse,self.settings.known_first,self.core.natural)
-  for _,e in ipairs(Library.ordered(files,self.settings.sort,self.settings.reverse,self.core.natural))do result[#result+1]=e end
+  for _,e in ipairs(Library.ordered(files,self.settings.sort,self.settings.reverse,self.core.natural,chapter_numbers))do result[#result+1]=e end
   return result
  end
  function Shelf:folderRows(parent,entries,offline,resume_id)
   local rows={};local info=self.core:titleInfo(parent)
-  for _,entry in ipairs(self:orderedEntries(Metadata.visible(entries,self.settings.show_service,info.cover)))do
+  for _,entry in ipairs(self:orderedEntries(Metadata.visible(entries,self.settings.show_service,info.cover),info.chapter_numbers))do
    local e=entry;local cached=self.core:cached(e.id)
    local summary
    if not e.is_folder then
@@ -779,6 +779,11 @@ return function(Shelf,env)
    local statusOnly=statusEvents[kind]
    if kind=='indexed' or kind=='light_mode'then self.browser_relist=true end
    if kind=='light_mode'then self.folder_menu._lazy_signature=nil end
+   if kind=='downloaded' and self.folder_visit and entry and entry.parent_id==self.folder_id
+     and entry.name:lower()=='index.json' then
+    self.folder_visit.resume_started=nil
+    self:startFolderResume()
+   end
    if not statusOnly and self.folder_facts then
     if kind=='indexed' or not entry then
      self.folder_facts={}

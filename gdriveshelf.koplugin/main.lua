@@ -322,7 +322,7 @@ function Shelf:offlineChildren(parent)
  return result
 end
 function Shelf:showFileSort()
- local labels={natural=tr("Natural name order"),name=tr("Name"),size=tr("Size"),date=tr("Modified date")}
+ local labels={natural=tr("Chapter number or natural name"),name=tr("Name"),size=tr("Size"),date=tr("Modified date")}
  local menu
  local function refresh()
   self:saveSettings()

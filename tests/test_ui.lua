@@ -148,7 +148,7 @@ test('file sorting is reachable in folder actions and persists independently of 
  package.loaded.gettext={current_lang='C'}
  local p=instance({});p.settings={title_sort='read'}
  local rows;p.menu=function(_,_,r)rows=r end;local saved=0;p.saveSettings=function()saved=saved+1 end
- p:showFileSort();assert(rows[1].text:find('Natural',1,true))
+ p:showFileSort();assert(rows[1].text:find('Chapter number',1,true))
  rows[3].callback();assert(p.settings.sort=='size'and p.settings.title_sort=='read'and saved==1)
  rows[#rows].callback();assert(p.settings.reverse and saved==2)
 end)

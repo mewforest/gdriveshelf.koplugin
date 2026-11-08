@@ -49,6 +49,7 @@ function M.normalize(data,kind)
  local m={title=text(d.title)or text(d.name),author=names(d.authors or d.author),description=text(d.description_text)or text(d.description)or text(d.summary),tags=names(d.tags or d.genre),status=text(d.state)or text(d.status),publisher=text(d.publisher),year=tonumber(d.year),chapters={},cover='cover.jpg'}
  if M.isImageName(d.cover_entry) then m.cover=d.cover_entry
  elseif M.isImageName(data.cover_entry) then m.cover=data.cover_entry end
+ if kind=='index' then m.chapter_numbers={} end
  local chapters=d.chapters or data.chapters
  if type(chapters)=='table' then
   for _,ch in pairs(chapters) do
@@ -56,6 +57,14 @@ function M.normalize(data,kind)
     local name=text(ch.name)
     name=name and name:match('^%s*(.-)%s*$')
     if name and name~='' then m.chapters[ch.file]=name end
+    if m.chapter_numbers then
+     local number=tonumber(ch.number)
+     if number and number==number and math.abs(number)<math.huge then
+      local old=m.chapter_numbers[ch.file]
+      -- Conflicting index entries leave the filename as the only reliable key.
+      m.chapter_numbers[ch.file]=(old==nil or old==number) and number or false
+     end
+    end
    end
   end
  end

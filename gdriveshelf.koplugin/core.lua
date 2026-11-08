@@ -289,7 +289,7 @@ function Core:importedMetadata(entries)
   if kind then
    local cached=self:cached(entry.id)
    local parsed=cached and cached.parsed
-   if cached and not parsed then
+   if cached and (not parsed or (kind=='index' and not parsed.chapter_numbers)) then
     local data=self.storage:readJSON(cached.path,8*MiB)
     if data then parsed=Metadata.normalize(data,kind);cached.parsed=parsed end
    end
@@ -457,7 +457,8 @@ function Core:prefetch(entry,fraction)
  limit=math.max(0,math.min(3,limit))
  if limit==0 then return end
  local list=self:cachedList(entry.parent_id)
- for _,next_entry in ipairs(Library.next(list,entry.id,limit,self.settings.sort,self.settings.reverse,self.natural))do
+ local numbers=self:importedMetadata(list).chapter_numbers
+ for _,next_entry in ipairs(Library.next(list,entry.id,limit,self.settings.sort,self.settings.reverse,self.natural,numbers))do
   if (allowBooks or Catalog.kind(next_entry,self.state)=='comics')and not self:cached(next_entry.id)then
    if not self.state.downloads[next_entry.id] or not self.jobs.keys or not self.jobs.keys['download:'..next_entry.id]then
     self:download(next_entry,'auto',nil,true,light)
@@ -466,7 +467,9 @@ function Core:prefetch(entry,fraction)
  end
 end
 function Core:next(entry)
- return Library.next(self:cachedList(entry.parent_id),entry.id,1,self.settings.sort,self.settings.reverse,self.natural)[1]
+ local list=self:cachedList(entry.parent_id)
+ local numbers=self:importedMetadata(list).chapter_numbers
+ return Library.next(list,entry.id,1,self.settings.sort,self.settings.reverse,self.natural,numbers)[1]
 end
 function Core:cancelDownload(id)
  self.state.downloads[id]=nil;self.jobs:cancel('download:'..id);self.state.downloads[id]=nil;self:save()

@@ -133,3 +133,23 @@ H.test('choosing cloud conflict replaces the displayed mark and invalidates the 
  H.eq(c:chapterSummary(book).status,'reading');H.eq(c:chapterSummary(book).page,12)
  H.eq(c:remote(book).stamp.version,'2')
 end)
+H.test('Continue uses chapter numbers from the cached index with an offline subset',function()
+ local c,_,_,_,_,_,calls,entries,parents=fixture()
+ local first,second,last=entries[3],entries[1],entries[2]
+ parents[#parents+1]={id='index',name='index.json',parent_id='title'}
+ c:rememberList('title',parents)
+ c.settings.offline=true
+ local cached=c.cached
+ c.cached=function(self,id)
+  if id=='index' then
+   return {parsed={chapter_numbers={[first.name]=0,[second.name]=1,[last.name]=2}}}
+  end
+  return cached(self,id)
+ end
+ local offline={second,last,first}
+ H.eq(c:resumeChapter('title',offline).entry.id,first.id)
+ c.state.history[first.id]={time=10,entry=first}
+ c.state.summaries[first.id]={page=7,percent=1,status='complete'}
+ H.eq(c:resumeChapter('title',offline).entry.id,second.id)
+ H.eq(calls.reads,0)
+end)

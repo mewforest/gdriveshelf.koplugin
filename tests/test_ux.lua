@@ -132,3 +132,26 @@ H.test('root and ZIP alone do not generate a comic header, while user overrides 
  p.core.state.folder_types.root='comics'
  assert(p:browserPresentation('root',{{id='a',name='1.cbz',parent_id='root'}}).header)
 end)
+H.test('folder chapters sort by index number before unnumbered filenames',function()
+ local p=instance()
+ local index={chapters={
+  {file='Z prologue.cbz',number=0,name='Prologue'},
+  {file='Y extra.cbz',number='2.5'},
+  {file='A finale.cbz',number=10},
+  {file='Notes 2.cbz',number='invalid'},
+ }}
+ p.core.titleInfo=function()return require('metadata').normalize(index,'index')end
+ local entries={
+  {id='finale',name='A finale.cbz',parent_id='p'},
+  {id='notes10',name='Notes 10.cbz',parent_id='p'},
+  {id='extra',name='Y extra.cbz',parent_id='p'},
+  {id='notes2',name='Notes 2.cbz',parent_id='p'},
+  {id='prologue',name='Z prologue.cbz',parent_id='p'},
+ }
+ local rows=p:folderRows('p',entries,true)
+ local order={};for _,row in ipairs(rows)do order[#order+1]=row.entry.id end
+ H.eq(table.concat(order,','),'prologue,extra,finale,notes2,notes10')
+ H.eq(rows[1].text,'Prologue')
+ p.settings.sort='name'
+ H.eq(p:folderRows('p',entries,true)[1].entry.id,'finale')
+end)

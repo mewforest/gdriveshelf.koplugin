@@ -24,10 +24,20 @@ local function natural(a,b)
  end
  return #x<#y
 end
-function M.ordered(entries,mode,reverse,cmp)
+function M.ordered(entries,mode,reverse,cmp,chapter_numbers)
+ local by_chapter=chapter_numbers and (mode==nil or mode=='natural')
  local r={};for _,e in ipairs(entries or {}) do r[#r+1]=e end
  table.sort(r,function(a,b)
   if not not a.is_folder~=not not b.is_folder then return not not a.is_folder end
+  if by_chapter and not a.is_folder then
+   local an,bn=chapter_numbers[a.name] or nil,chapter_numbers[b.name] or nil
+   if an~=bn then
+    if an==nil then return false end
+    if bn==nil then return true end
+    if reverse then return an>bn end
+    return an<bn
+   end
+  end
   local av,bv
   if mode=='size' then av,bv=tonumber(a.size) or 0,tonumber(b.size) or 0
   elseif mode=='date' then av,bv=a.modified_time or '',b.modified_time or ''
@@ -45,11 +55,11 @@ function M.ordered(entries,mode,reverse,cmp)
   if reverse then return more end;return less
  end);return r
 end
-function M.next(entries,id,count,mode,reverse,cmp)
+function M.next(entries,id,count,mode,reverse,cmp,chapter_numbers)
  local current;for _,e in ipairs(entries) do if e.id==id then current=e;break end end
  if not current then return {} end
  local list={};for _,e in ipairs(entries) do if e.parent_id==current.parent_id and M.supported(e) then list[#list+1]=e end end
- list=M.ordered(list,mode,reverse,cmp);local result={};local found=false
+ list=M.ordered(list,mode,reverse,cmp,chapter_numbers);local result={};local found=false
  for _,e in ipairs(list) do if found and #result<(count or 1) then result[#result+1]=e end;if e.id==id then found=true end end
  return result
 end

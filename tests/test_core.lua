@@ -42,3 +42,29 @@ H.test('opening a cached book first cancels an unfinished relocation',function()
  local path;c:open({id='a',name='1.cbz',parent_id='x'},function(p)path=p end)
  H.eq(cancelled,'relocate');H.eq(path,'/cache/a');assert(not c.relocating)
 end)
+H.test('next chapter and prefetch use chapter numbers from an older cached index offline',function()
+ local c,calls=setup()
+ local first={id='first',name='Z opening.cbz',parent_id='x'}
+ local second={id='second',name='A sequel.cbz',parent_id='x'}
+ local last={id='last',name='B finale.cbz',parent_id='x'}
+ local index={id='metadata',name='index.json',parent_id='x'}
+ c.state.docs={first=first,second=second,last=last,metadata=index}
+ c.state.entries.metadata={id='metadata',ready=true,path='/cache/index',parsed={chapters={}}}
+ local reads=0
+ c.storage.exists=function(_,path)return path=='/cache/index'end
+ c.storage.readJSON=function(_,path)
+  H.eq(path,'/cache/index');reads=reads+1
+  return {chapters={
+   {file=first.name,number=0},{file=second.name,number=2.5},{file=last.name,number=10},
+  }}
+ end
+ local next_entry=c:next(first)
+ H.eq(next_entry and next_entry.id,'second')
+ H.eq(c:next(second).id,'last')
+ H.eq(reads,1);H.eq(calls(),0)
+ c.settings.offline=false;c.settings.prefetch=1
+ local prefetched
+ c.download=function(_,entry)prefetched=entry.id end
+ c:prefetch(first)
+ H.eq(prefetched,'second');H.eq(reads,1)
+end)

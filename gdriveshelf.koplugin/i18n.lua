@@ -409,6 +409,7 @@ local ru={
  ["Modified date"]="Дата изменения",
  ["Name"]="Имя",
  ["Natural name order"]="Имя (естественный порядок)",
+ ["Chapter number or natural name"]="Номер главы или имя файла",
  ["Network request failed"]="Ошибка сетевого запроса",
  ["Next chapter"]="Следующая глава",
  ["No downloaded chapters"]="Нет загруженных глав",
