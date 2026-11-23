@@ -25,6 +25,7 @@ H.test('recursive indexing requires explicit confirmation',function()
 end)
 H.test('index status omits 0/0 before discovery and identifies completed counts',function()
  local p=instance()
+ p.settings.index_enabled=true
  local status={phase='prepare',discovered=0,done=0,elapsed=0,recent={}}
  p.core.indexStatus=function()return status end
  p.core.networkState=function()return 'online' end
@@ -32,6 +33,16 @@ H.test('index status omits 0/0 before discovery and identifies completed counts'
  status={phase='listing',discovered=20,done=12,elapsed=75,recent={{phase='prepare'}}}
  text=p:indexScreenText()
  assert(text:find('12 checked',1,true) and text:find('20 found',1,true) and text:find('1 min 15 s',1,true))
+end)
+H.test('turning off indexing overrides a paused checkpoint while keeping the last date',function()
+ local p=instance()
+ local status={phase='paused',paused=true,discovered=0,done=0,elapsed=0,recent={},checked_at=1700000000}
+ p.core.indexStatus=function()return status end
+ p.core.networkState=function()return 'online'end
+ assert(p:indexSettingsLabel():find('Indexing off',1,true))
+ local text=p:indexScreenText()
+ assert(text:find('Indexing off',1,true)and not text:find('Indexing paused',1,true))
+ assert(text:find(os.date('%d.%m.%Y %H:%M',status.checked_at),1,true))
 end)
 H.test('transfer shows elapsed time and ETA only while the total and rate are usable',function()
  local p=instance();local e={id='test',name='Test.cbz',size=100}

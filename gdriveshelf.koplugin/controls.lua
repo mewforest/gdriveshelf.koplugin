@@ -37,75 +37,134 @@ return function(Shelf,env)
   else text=string.format(tr('Queued: %s'),name)end
   return text
  end
+ function Shelf:setHomeFolder(id)
+  local core=self.core
+  if self.settings.home~=id then
+   core:cancelIndex(false)
+   core.last_index_job=nil
+   self.settings.home=id
+   self.settings.index_enabled=nil
+   self.settings.index_recursive_confirmed=nil
+   self.settings.index_needs_confirmation=nil
+   self:saveSettings()
+   self:updateIndexScreen('indexed')
+   self:updateIndexSettings()
+  end
+  if id~='root' and not self.settings.index_enabled then
+   UI():nextTick(function()
+    if self.core==core and not core.retired and self.settings.home==id and not self.settings.index_enabled then
+     self:enableRecursiveIndex()
+    end
+   end)
+  else env.message(tr('Home folder saved'))end
+ end
  function Shelf:enableRecursiveIndex()
   if not self.settings.home or self.settings.home=='root'then env.message(tr('Choose a home folder before indexing.'));return end
+  local home=self.settings.home
   UI():show(self:confirmation{text=tr('Index this home folder and all its subfolders? The first pass may take time. Documents and SDR contents will not be downloaded. Later updates use the Drive change log.'),ok_text=tr('Index library'),ok_callback=function()
+   if self.settings.home~=home then return end
    self.settings.index_enabled=true;self.settings.index_recursive_confirmed=true;self.settings.index_needs_confirmation=nil;self:saveSettings()
    self:showIndexScreen(function()self.core:reindexHome()end)
   end})
  end
  function Shelf:reindexLibrary()
   if not self.settings.index_enabled or not self.settings.index_recursive_confirmed then return self:enableRecursiveIndex()end
-  UI():show(self:confirmation{text=tr('Rebuild the catalog from this home folder? Saved documents and reading progress will be kept.'),ok_text=tr('Reindex library'),ok_callback=function()self:showIndexScreen(function()self.core:reindexHome()end)end})
+  local home=self.settings.home
+  UI():show(self:confirmation{text=tr('Rebuild the catalog from this home folder? Saved documents and reading progress will be kept.'),ok_text=tr('Reindex library'),ok_callback=function()
+   if self.settings.home==home then self:showIndexScreen(function()self.core:reindexHome()end)end
+  end})
  end
  local indexPhase={idle='Ready to check the library',prepare='Preparing the index…',listing='Checking folders…',
   changes='Checking Drive changes…',applying='Saving changes…',paused='Indexing paused',error='Indexing interrupted',complete='Library index is up to date'}
+ local function checkedAt(status)
+  return status.checked_at and os.date('%d.%m.%Y %H:%M',status.checked_at)
+ end
+ local function indexPercent(status)
+  if status.ready and not status.running then return 1 end
+  return status.discovered>0 and math.min(1,status.done/status.discovered)or 0
+ end
+ function Shelf:indexSettingsLabel()
+  local status=self.core.indexStatus and self.core:indexStatus()or{}
+  local label
+  if not self.settings.index_enabled then label=tr('Indexing off')
+  elseif status.running or status.paused or status.phase=='error'then label=tr(indexPhase[status.phase]or indexPhase.prepare)
+  elseif checkedAt(status)then label=checkedAt(status)
+  else label=tr('Never checked')end
+  return tr('Library indexing')..' · '..label
+ end
  function Shelf:indexScreenText()
-  local status=self.core:indexStatus()
+  local status=self.core:indexStatus(true)
   local network=self.core:networkState()
-  local lines={tr('Library indexing'),tr(indexPhase[status.phase]or indexPhase.prepare)}
+  local phase=not self.settings.index_enabled and 'Indexing off' or indexPhase[status.phase]
+  local lines={tr('Library indexing'),tr(phase or indexPhase.prepare)}
   local label=({offline='Offline mode',sleep='Waiting for the device to wake',retry='Waiting before retry',auth='Authorization is required'})[network]
   if label then lines[#lines+1]=tr(label)end
-  if status.discovered>0 then
+  if status.discovered>0 and (status.running or not status.ready)then
    lines[#lines+1]=string.format(tr('%d checked · %d found so far'),status.done,status.discovered)
   end
+  lines[#lines+1]=string.format(tr('Folders indexed: %d · Manga titles: %d'),status.indexed_folders or 0,status.indexed_titles or 0)
+  lines[#lines+1]=string.format(tr('Last successful check: %s'),checkedAt(status)or tr('Never checked'))
   if status.elapsed>0 then lines[#lines+1]=string.format(tr('Elapsed: %d min %02d s'),math.floor(status.elapsed/60),status.elapsed%60)end
   local recent={}
   for _,event in ipairs(status.recent)do
    local label=indexPhase[event.phase]
-   if label and label~=indexPhase[status.phase] and recent[#recent]~=label then recent[#recent+1]=label end
+   if label and label~=indexPhase[status.phase] and recent[#recent]~=tr(label)then recent[#recent+1]=tr(label)end
   end
-  if #recent>0 then lines[#lines+1]=table.concat(recent,' · '):gsub('…','')end
+  if status.running and #recent>0 then lines[#lines+1]=table.concat(recent,' · '):gsub('…','')end
   if status.error then lines[#lines+1]=tr('Open the downloads queue to check the connection and retry.')end
-  lines[#lines+1]='\n'..tr('The first check may take a while on slower devices. Keep KOReader open to let it finish.')
+  if not status.checked_at then
+   lines[#lines+1]='\n'..tr('The first check may take a while on slower devices. Keep KOReader open to let it finish.')
+  end
   return table.concat(lines,'\n')
  end
  function Shelf:showIndexScreen(start)
-  local old=self.index_dialog
-  if old then return old end
-  local dialog
-  local function dismiss(pause)
+  local dialog=self.index_dialog
+  local core=self.core
+  local function run(action)
+   UI():nextTick(function()
+    if self.index_dialog~=dialog or self.core~=core or core.retired then return end
+    if core:online()then action()
+    else env.message(tr('Go online to index the library.'))end
+    self:updateIndexScreen('indexed')
+   end)
+  end
+  if dialog then if start then run(start)end;return dialog end
+  local function dismiss()
    if self.index_dialog~=dialog then return end
    self.index_dialog=nil
-   if pause and self.core.index_job then self.core:cancelIndex()end
    UI():close(dialog)
   end
   dialog=require('ui/widget/buttondialog'):new{title=self:indexScreenText(),buttons={
    {{text=tr('Pause'),id='pause',callback=function()if self.core.index_job then self.core:cancelIndex()end end},
-    {text=tr('Resume'),id='resume',callback=function()
-     if not self.core:online()then env.message(tr('Go online to index the library.'));return end
-     self.core:catalogRefresh(true);self:updateIndexScreen('indexing')
+    {text=tr(self.settings.index_enabled and 'Resume'or 'Index library'),id='resume',callback=function()
+     if not self.settings.index_enabled then self:enableRecursiveIndex()
+     else run(function()core:catalogRefresh(true)end)end
     end}},
-   {{text=tr('Close'),callback=function()dismiss(true)end},
-    {text=tr('In background'),callback=function()dismiss(false)end}},
+   {{text=tr('Check for new titles'),id='check',callback=function()run(function()core:catalogRefresh(true)end)end}},
+   {{text=tr('Reindex library'),id='reindex',callback=function()self:reindexLibrary()end}},
+   {{text=tr('Turn off indexing'),id='disable',callback=function()
+     self.settings.index_enabled=false;core:cancelIndex(false);self:saveSettings()
+     self:updateIndexScreen('indexed');self:updateIndexSettings()
+    end},
+    {text=tr('Close'),callback=dismiss}},
   }}
-  dialog.onClose=function()dismiss(true);return true end
+  dialog.onClose=function()dismiss();return true end
+  local closeWidget=dialog.onCloseWidget
+  dialog.onCloseWidget=function(widget,...)
+   if self.index_dialog==widget then self.index_dialog=nil end
+   if closeWidget then closeWidget(widget,...)end
+  end
   local status=self.core:indexStatus()
   local bar=require('ui/widget/progresswidget'):new{width=dialog:getAddedWidgetAvailableWidth(),
    height=require('device').screen:scaleBySize(8),bordersize=1,radius=0,
-   percentage=status.discovered>0 and math.min(1,status.done/status.discovered)or 0,
+   percentage=indexPercent(status),
    not_focusable=true,parent=dialog}
   dialog:addWidget(bar)
   dialog._index_bar=bar
   self.index_dialog=dialog
-  UI():show(dialog)
+  UI():show(self:trackAccountWidget(dialog))
   self:updateIndexScreen('indexed')
-  if start then UI():nextTick(function()
-   if self.index_dialog~=dialog then return end
-   if self.core:online()then start()
-   else env.message(tr('Go online to index the library.'))end
-   self:updateIndexScreen('indexed')
-  end)end
+  if start then run(start)end
   return dialog
  end
  function Shelf:updateIndexScreen(kind)
@@ -119,14 +178,22 @@ return function(Shelf,env)
    local status=self.core:indexStatus()
    local title=self:indexScreenText()
    local bar=dialog._index_bar
-   local percent=status.discovered>0 and math.min(1,status.done/status.discovered)or 0
+   local percent=indexPercent(status)
    if title~=dialog.title or bar.percentage~=percent then
     dialog._index_updated=now
     bar:setPercentage(percent)
     dialog:setTitle(title)
    end
+   local enabled=self.settings.index_enabled==true
+   local hasHome=self.settings.home and self.settings.home~='root'
+   local resume=dialog:getButtonById('resume')
+   local text=tr(enabled and 'Resume'or 'Index library')
+   if resume.text~=text then resume:setText(text,resume.width)end
    dialog:getButtonById('pause'):enableDisable(status.running==true)
-   dialog:getButtonById('resume'):enableDisable(not status.running and status.phase~='complete')
+   resume:enableDisable(hasHome and not status.running and (not enabled or not status.ready or status.paused or status.phase=='error'))
+   dialog:getButtonById('check'):enableDisable(enabled and status.ready and not status.running)
+   dialog:getButtonById('reindex'):enableDisable(hasHome and enabled and not status.running)
+   dialog:getButtonById('disable'):enableDisable(enabled)
   end
   if self:whenVisible(dialog,update)then update()end
  end

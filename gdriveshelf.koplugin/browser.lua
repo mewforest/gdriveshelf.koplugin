@@ -97,11 +97,14 @@ function B.header(o)
   local coverWidth=math.floor(coverHeight*.72)
   local coverColumnWidth
   local textWidth=compact_width
-  if o.summary.cover_path then
+  if o.summary.cover_path or o.summary.cover_loading then
    coverColumnWidth=math.max(coverWidth,resumeWidth or 0)
+   local picture=o.summary.cover_path and require('ui/widget/iconwidget'):new{
+    file=o.summary.cover_path,width=coverWidth,height=coverHeight,scale_factor=0,is_icon=false}
+    or Text:new{text=o.summary.cover_loading,width=coverWidth,height=coverHeight,height_adjust=true,
+     height_overflow_show_ellipsis=true,alignment='center',face=Font:getFace('smallinfofont')}
    row[#row+1]=require('ui/widget/container/centercontainer'):new{
-    dimen=require('ui/geometry'):new{w=coverColumnWidth,h=coverHeight},
-    require('ui/widget/iconwidget'):new{file=o.summary.cover_path,width=coverWidth,height=coverHeight,scale_factor=0,is_icon=false}}
+    dimen=require('ui/geometry'):new{w=coverColumnWidth,h=coverHeight},picture}
    row[#row+1]=HS:new{width=gap};textWidth=textWidth-coverColumnWidth-gap
   end
   local actions=H:new{align='center'}
@@ -132,6 +135,7 @@ function B.header(o)
   addLine(o.summary.stats,Screen:scaleBySize(34))
   addLine(o.summary.cached,Screen:scaleBySize(34))
   addLine(o.summary.reading_date,Screen:scaleBySize(34))
+  if o.summary.cover_path then addLine(o.summary.data_loading,Screen:scaleBySize(34))end
   if o.summary.progress~=nil then
    local progressLabel=TextLine:new{text=o.summary.progress_label,face=smallFace}
    local percent=TextLine:new{text=string.format('%d%%',math.floor(o.summary.progress*100+.5)),face=smallFace}
@@ -199,8 +203,8 @@ function B.decorateList(menu)
     local old=text[1]
     local width=item.content_width
     local body=V:new{align='left',Text:new{text=entry.list_title,face=item.face,bold=true,max_width=width}}
-    if entry.list_detail then
-     body[#body+1]=Text:new{text=entry.list_detail,face=item.info_face,max_width=width}
+    if entry.cover_loading or entry.list_detail then
+     body[#body+1]=Text:new{text=entry.cover_loading or entry.list_detail,face=item.info_face,max_width=width}
     end
     if entry.list_progress then
      body[#body+1]=require('ui/widget/verticalspan'):new{width=Screen:scaleBySize(3)}
@@ -266,13 +270,17 @@ function B.gridClass(Menu)
       end
      end
      local bodyHeight=contentHeight-(badges and badges:getSize().h+spacer or 0)
-     local label=Text:new{text=item.card_title or item.text or '',face=font,width=contentWidth,height=math.floor(bodyHeight*(item.icon_file and .35 or .50)),height_adjust=true,height_overflow_show_ellipsis=true,alignment='center'}
+     local hasPicture=item.icon_file or item.cover_loading
+     local label=Text:new{text=item.card_title or item.text or '',face=font,width=contentWidth,height=math.floor(bodyHeight*(hasPicture and .35 or .50)),height_adjust=true,height_overflow_show_ellipsis=true,alignment='center'}
      local detail=item.card_details and item.card_details~=''and Text:new{text=item.card_details,face=detailFont,width=contentWidth,height=math.floor(bodyHeight*.35),height_adjust=true,height_overflow_show_ellipsis=true,alignment='center'}or nil
      local textHeight=label:getSize().h+(detail and detail:getSize().h+spacer or 0)+(item.folder_progress~=nil and progressHeight+spacer or 0)
      local body=V:new{align='center'}
-     if item.icon_file then
+     if hasPicture then
       local pictureHeight=math.max(1,math.min(math.floor(bodyHeight*.83),bodyHeight-textHeight-spacer))
-      local picture=require('ui/widget/iconwidget'):new{file=item.icon_file,width=contentWidth,height=pictureHeight,scale_factor=0,is_icon=false,alpha=true}
+      local picture=item.icon_file and require('ui/widget/iconwidget'):new{
+       file=item.icon_file,width=contentWidth,height=pictureHeight,scale_factor=0,is_icon=false,alpha=true}
+       or Text:new{text=item.cover_loading,width=contentWidth,height=pictureHeight,height_adjust=true,
+        height_overflow_show_ellipsis=true,alignment='center',face=detailFont}
       body[#body+1]=Center:new{dimen=Geom:new{w=contentWidth,h=pictureHeight},picture}
       body[#body+1]=VS:new{width=spacer}
      end

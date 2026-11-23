@@ -225,7 +225,7 @@ function Core:updateListing(state,parent,entries,pulse)
  state.listings[parent]={complete=true,checked_at=now,ids=ids}
  return clean,stale
 end
-function Core:rememberList(parent,entries)
+function Core:rememberList(parent,entries,deferSave)
  local clean,stale=self:updateListing(self.state,parent,entries)
  self.listing_epoch=(self.listing_epoch or 0)+1
  if #stale>0 then self:evict(stale,true)end
@@ -237,16 +237,16 @@ function Core:rememberList(parent,entries)
   e.path=self.storage:filePath(e,'meta');local ok=self.storage:write(e.path,text)
   if ok then self.state.entries[id]=e end
  end
- return self:save()
+ return deferSave or self:save()
 end
-function Core:folder(parent,name,callback,force)
+function Core:folder(parent,name,callback,force,revalidate)
  self.state.folders[parent]=self.state.folders[parent] or {id=parent,name=name or parent,is_folder=true}
  self.catalog_folder=parent
  local listing=self.state.listings[parent]
  local cached=self:cachedList(parent);if listing or #cached>0 or not self:online()then callback(cached,true)end
  if not self:online()then return false end
  local ttl=self.settings.light_mode and LIGHT_LIST_TTL or 30
- if not force and listing and listing.complete and not listing.dirty and os.time()-(listing.checked_at or 0)<ttl then
+ if not force and not revalidate and listing and listing.complete and not listing.dirty and os.time()-(listing.checked_at or 0)<ttl then
   self:metadata(cached,true)
   if not self.settings.light_mode then self:indexHome(false)end
   return false
@@ -306,19 +306,96 @@ function Core:coverMetadata(entries,explicit)
  local cover=Metadata.coverCandidates(entries,preferred)[1]
  if cover then
   local old=currentMetadata(self,cover)
-  if not old or not old.preview_path then self:download(cover,'meta',nil,not explicit)end
+  if (not old or not old.preview_path) and not (self.jobs.keys or {})['download:'..cover.id] then
+   self:download(cover,'meta',nil,not explicit)
+  end
  end
 end
-function Core:metadata(entries,explicit)
+function Core:metadata(entries,explicit,visibleCard)
  if self.settings.light_mode and not explicit then return end
  if self.settings.load_metadata~=false then
   for _,entry in ipairs(entries)do
-   if metadataKind(entry)and not currentMetadata(self,entry)then self:download(entry,'meta',nil,not explicit)end
+   if metadataKind(entry)and not currentMetadata(self,entry)then
+    if not (self.jobs.keys or {})['download:'..entry.id]then
+     self:download(entry,'meta',nil,not explicit,nil,visibleCard)
+    elseif not visibleCard then
+     local request=self.state.downloads[entry.id]
+     if request and request.visible_card then request.visible_card=nil;self:save()end
+    end
+   end
   end
  end
  self:coverMetadata(entries,explicit)
 end
-function Core:download(entry,pool,callback,automatic,light_prefetch)
+function Core:loadingFolders()
+ local loading={}
+ if not self:online()then return loading end
+ for id in pairs(self.folder_waiters or {})do loading[id]=true end
+ for id in pairs(self.cover_listing_pending or {})do loading[id]=true end
+ local keys=self.jobs.keys or {}
+ for id,request in pairs(self.state.downloads)do
+  if request.pool=='meta' and request.entry.parent_id and keys['download:'..id]then loading[request.entry.parent_id]=true end
+ end
+ return loading
+end
+function Core:loadVisibleFolderCovers(folders,attempts,visible)
+ self.visible_cover_folder=visible
+ if not self:online()or self.settings.load_covers==false or self.relocating then return end
+ self.cover_listing_pending=self.cover_listing_pending or {}
+ local pending=self.cover_listing_pending
+ local groups={}
+ for _,folder in ipairs(folders)do
+  local id=folder.id
+  local listing=self.state.listings[id]or false
+  if not pending[id]and attempts[id]~=listing and not Metadata.isService(folder)then
+   attempts[id]=listing
+   if listing and listing.complete and not listing.dirty then
+    self:metadata(self:cachedList(id),true,true)
+   else
+    local scope=folder.drive_id or false
+    groups[scope]=groups[scope]or{}
+    local group=groups[scope]
+    group[#group+1]=id
+    pending[id]={listing=listing,parent=folder.parent_id}
+   end
+  end
+ end
+ for scope,group in pairs(groups)do
+  for first=1,#group,20 do
+   local ids={unpack(group,first,math.min(first+19,#group))}
+   local function complete(buckets)
+    local changed=false
+    for _,id in ipairs(ids)do
+     local previous=pending[id]
+     local folder=self.state.folders[id]
+     if buckets and buckets[id] and (self.state.listings[id]or false)==previous.listing
+      and folder and folder.parent_id==previous.parent and (folder.drive_id or false)==scope then
+      self:rememberList(id,buckets[id],true)
+      changed=true
+     end
+     pending[id]=nil
+    end
+    if changed then self:save()end
+    for _,id in ipairs(ids)do
+     if buckets and visible(id)and self.settings.load_covers~=false and self:online()and not self.relocating then
+      local listing=self.state.listings[id]
+      if listing and listing.complete and not listing.dirty then
+       attempts[id]=listing
+       self:metadata(self:cachedList(id),true,true)
+      else attempts[id]=nil end
+     end
+    end
+    self:emit('folder_data')
+   end
+   self.cover_listing_seq=(self.cover_listing_seq or 0)+1
+   if not self:network('cover-list:'..self.cover_listing_seq,function(provider)
+    return provider:listParents(ids,scope and {drive_id=scope}or nil)
+   end,complete,false)then complete()end
+  end
+ end
+ if next(groups)then self:emit('folder_data')end
+end
+function Core:download(entry,pool,callback,automatic,light_prefetch,visibleCard)
  if self.settings.light_mode and automatic and not(light_prefetch and (self.settings.light_prefetch or 0)>0)then return false end
  self:stopRelocation()
  local old=self:cached(entry.id)
@@ -335,8 +412,10 @@ function Core:download(entry,pool,callback,automatic,light_prefetch)
   if pool=='offline'and wanted.pool~='offline'then wanted.pool='offline';changed=true end
   if not automatic and wanted.automatic~=false then wanted.automatic=false;changed=true end
   if light_prefetch and not wanted.light_prefetch then wanted.light_prefetch=true;changed=true end
+  if wanted.visible_card and not visibleCard then wanted.visible_card=nil;changed=true end
   if wanted.entry~=entry then wanted.entry=entry;changed=true end
- else self.state.downloads[entry.id]={entry=entry,pool=pool,automatic=automatic==true,light_prefetch=light_prefetch or nil}end
+ else self.state.downloads[entry.id]={entry=entry,pool=pool,automatic=automatic==true,light_prefetch=light_prefetch or nil,
+  visible_card=visibleCard or nil}end
  if changed then self:save()end
  if not wanted then self:emit('queued',entry)end
  if not self:online()then return false end
@@ -405,7 +484,10 @@ function Core:download(entry,pool,callback,automatic,light_prefetch)
   if not (err and err.silent)then self:emit(result and 'downloaded' or 'error',entry,err)end
   if result and result.parsed and entry.parent_id then
    local explicit=not automaticDownload(request)
-   if not self.settings.light_mode or (explicit and self.catalog_folder==entry.parent_id and self.catalog_visible~=false)then
+   local entered=self.catalog_folder==entry.parent_id and self.catalog_visible~=false
+   local visible=self.visible_cover_folder and self.visible_cover_folder(entry.parent_id)
+   if (request.visible_card and (entered or visible))
+    or (not request.visible_card and (not self.settings.light_mode or (explicit and entered)))then
     self:coverMetadata(self:cachedList(entry.parent_id),explicit)
    end
   end
@@ -550,7 +632,7 @@ function Core:resume(explicit)
  self:syncNetworkJobs()
  if self.relocating then return end
  for _,d in pairs(self.state.downloads)do
-  self:download(d.entry,d.pool,nil,not explicit and automaticDownload(d),d.light_prefetch)
+  self:download(d.entry,d.pool,nil,not explicit and automaticDownload(d),d.light_prefetch,d.visible_card)
  end
  self:flushPending(explicit)
 end

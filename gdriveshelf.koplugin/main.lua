@@ -233,7 +233,10 @@ function Shelf:menu(title,rows,options)
  if options.lazy then
   local original=menu.onGotoPage
   menu.onGotoPage=function(m,page)
-   if not self.automatic_page and page~=m.page and self.folder_visit then self.folder_visit.user_paged=true end
+   if not self.automatic_page and page~=m.page and self.folder_visit then
+    self.folder_visit.user_paged=true
+    self.folder_visit.cover_attempts=nil
+   end
    local result=original(m,page)
    if not self.automatic_page then self:visibleProgress(m)end
    return result
@@ -249,6 +252,7 @@ function Shelf:replaceMenu(menu,rows,title)
 end
 function Shelf:visibleProgress(menu)
  if menu._closed then return end
+ self:visibleFolderCovers(menu)
  local job=self.core.progress_job
  if job and (job.mode=='resume' or job.mode=='all')then return end
  local entries={};local first=((menu.page or 1)-1)*(menu.perpage or 14)+1
@@ -623,7 +627,15 @@ function Shelf:input(title,current,callback,input_type)
 end
 function Shelf:pickCredentials()
  local chooser;local path=self.settings.import_dir
- if not path or path=='/'then path=require('apps/filemanager/filemanagerutil').getHomeFolder()end
+ if not path or path=='/'then
+  local filemanagerutil=require('apps/filemanager/filemanagerutil')
+  if filemanagerutil.getHomeFolder then
+   path=filemanagerutil.getHomeFolder()
+  else
+   -- KOReader 2026.03 and earlier resolve the home folder this way.
+   path=G_reader_settings:readSetting('home_dir') or filemanagerutil.getDefaultDir()
+  end
+ end
  chooser=require('ui/widget/filechooser'):new{title=tr("Select a GDriveShelf credentials JSON file"),ui=self.ui,path=path,show_unsupported=false,
   file_filter=function(name)return name:lower():match('%.json$')~=nil end,onFileSelect=function(_,item)
    self:runAction(function()

@@ -20,8 +20,10 @@ local p=setmetatable({settings={auto_mib=3072,meta_mib=256,prefetch=1,threshold=
 local title,rows,options
 p.menu=function(_,t,r,o)title,rows,options=t,r,o end
 H.test('settings screens and actions render in English and Russian',function()
- locale.current_lang='C';p:showSettings();H.eq(title,'Google Drive Shelf settings');assert(rows[1].text:find('Offline',1,true));assert(rows[2].text:find('Light mode',1,true));assert(rows[4].text=='Catalog and appearance')
+ locale.current_lang='C';p:showSettings();H.eq(title,'Google Drive Shelf settings');assert(rows[1].text:find('Offline',1,true));assert(rows[2].text:find('Light mode',1,true));assert(rows[7].text=='Catalog and appearance')
  locale.current_lang='ru';p:showSettings();H.eq(title,'Настройки Google Drive Shelf');assert(rows[1].text:find('Офлайн',1,true));assert(rows[2].text:find('Лёгкий режим',1,true))
+ H.eq(rows[4].text,'Папка для кеша и загрузок');H.eq(rows[5].text,'Данные и память')
+ H.eq(I.format('Continue from “%s”','Том 2'),'Продолжить с «Том 2»')
 end)
 H.test('settings rows request native monochrome icons',function()
  locale.current_lang='C';p:showSettings();assert(options and options.icons)

@@ -1,6 +1,43 @@
 local H=require('tests/helper')
 local Fixture=require('catalog_fixture')
 
+H.test('reopening the home while its light-mode listing is fresh checks Drive',function()
+ local provider={list=function()return {{id='new',parent_id='home',name='New',is_folder=true}}end}
+ local core,_,drain=Fixture.new({home='home',light_mode=true},provider)
+ core:rememberList('home',{})
+ local paints={}
+ assert(core:folder('home','Shelf',function(entries)paints[#paints+1]=entries end,nil,true))
+ H.eq(#paints[1],0)
+ drain()
+ H.eq(paints[2][1].id,'new')
+end)
+
+H.test('visible new covers are discovered in one group and never revisited on redraw',function()
+ local groups=0
+ local provider={listParents=function(_,ids,scope)
+  groups=groups+1;H.eq(table.concat(ids,','),'title,blank');H.eq(scope.drive_id,'shared')
+  return {title={{id='cover',name='cover.webp',parent_id='title',version='1'}},blank={}}
+ end}
+ local core,_,drain,jobs=Fixture.new({home='home',light_mode=true},provider)
+ core:rememberList('home',{{id='title',name='Manga',is_folder=true,drive_id='shared'},
+  {id='blank',name='Blank',is_folder=true,drive_id='shared'}, {id='next-page',name='Other',is_folder=true}})
+ local folders={core.state.folders.title,core.state.folders.blank}
+ local attempts={};local downloads={}
+ core.download=function(_,entry,pool,_,automatic)
+  H.eq(pool,'meta');assert(not automatic);downloads[#downloads+1]=entry.id
+ end
+ core:loadVisibleFolderCovers(folders,attempts,function()return true end)
+ H.eq(#jobs,1);assert(core:loadingFolders().title)
+ core:loadVisibleFolderCovers(folders,attempts,function()return true end)
+ H.eq(#jobs,1)
+ drain();assert(not core:loadingFolders().title);H.eq(downloads[1],'cover')
+ core:loadVisibleFolderCovers(folders,attempts,function()return true end)
+ H.eq(groups,1);H.eq(#jobs,0);H.eq(#downloads,1)
+ core.settings.offline=true
+ core:loadVisibleFolderCovers({core.state.folders['next-page']},{},function()return true end)
+ H.eq(#jobs,0)
+end)
+
 local function library(folderCount, bookCount)
  local tree={home={}}
  for folder=1,folderCount do
@@ -36,6 +73,10 @@ H.test('recursive indexing saves a bounded number of atomic checkpoints for 40 f
  H.eq(writes,0)
  H.eq(core.state.catalog.phase,'ready')
  H.eq(#core:cachedList('folder-40'),20)
+ local restarted=Fixture.new(core.settings,{},core.state)
+ local status=restarted:indexStatus(true)
+ H.eq(status.indexed_titles,40);H.eq(status.indexed_folders,41)
+ H.eq(status.checked_at,core.state.catalog.checked_at);assert(status.checked_at>0)
  local metrics=core:indexStatus().metrics
  H.eq(metrics.writes,saves)
  assert(metrics.max_apply_ms>=0 and metrics.max_save_ms>=0)

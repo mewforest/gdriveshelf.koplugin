@@ -4,6 +4,8 @@ return function(Core)
  if Core._recursive_catalog_installed then return end
  Core._recursive_catalog_installed=true
  local Metadata=require('gdriveshelf/metadata')
+ local Library=require('gdriveshelf/library')
+ local Catalog=require('gdriveshelf/catalog')
  local haveSocket,socket=pcall(require,'socket')
  local clock=haveSocket and socket.gettime or os.clock
 
@@ -310,13 +312,15 @@ return function(Core)
   self:emit('indexing')
  end
 
- function Core:indexStatus()
+ function Core:indexStatus(includeCounts)
   local job=self.index_job or self.last_index_job
   local catalog=self.state.catalog
-  if not matches(self,catalog)then return {phase='idle',done=0,discovered=0,elapsed=0,recent={}}end
+  if not matches(self,catalog)then
+   return {phase='idle',done=0,discovered=0,elapsed=0,recent={},indexed_folders=0,indexed_titles=0}
+  end
   if job and job.home~=catalog.home then job=nil end
   local running=self.index_job==job and job~=nil
-  return {
+  local status={
    phase=running and job.phase or(catalog.paused and 'paused' or(job and job.phase)or(catalog.phase=='ready'and 'complete'or'idle')),
    running=running,paused=catalog.paused==true,
    done=job and job.done or(catalog.processed or 0),
@@ -324,7 +328,21 @@ return function(Core)
    elapsed=job and math.max(0,(job.finished or os.time())-job.started)or 0,
    recent=job and job.recent or{},error=job and job.error,
    metrics=job and job.metrics,
+   checked_at=catalog.checked_at,ready=catalog.phase=='ready',
   }
+  if includeCounts then
+   local folders,titles,hasComics=0,0,{}
+   for _ in pairs(catalog.seen)do folders=folders+1 end
+   for id in pairs(catalog.members)do
+    local doc=self.state.docs[id]
+    if doc and catalog.seen[doc.parent_id] and not hasComics[doc.parent_id]
+     and Library.supported(doc)and Catalog.kind(doc,self.state)=='comics'then
+     hasComics[doc.parent_id]=true;titles=titles+1
+    end
+   end
+   status.indexed_folders,status.indexed_titles=folders,titles
+  end
+  return status
  end
 
  function Core:cancelIndex(explicit)
@@ -349,13 +367,12 @@ return function(Core)
  function Core:reindexHome()
   if not enabled(self)or not self:online()then return false end
   self:cancelIndex(false)
-  self.state.catalog=nil
-  return self:catalogRefresh(true)
+  return self:catalogRefresh(true,true)
  end
 
  function Core:indexHome(force)return self:catalogRefresh(force)end
 
- function Core:catalogRefresh(force)
+ function Core:catalogRefresh(force,rebuild)
   local catalog=self.state.catalog
   if self.index_job and(not enabled(self)or not matches(self,catalog))then self:cancelIndex(false)end
   if not enabled(self)or not self:online()or self.index_job then return false end
@@ -364,8 +381,9 @@ return function(Core)
    if catalog.paused or(catalog.phase=='ready'and os.time()-(catalog.checked_at or 0)<30)then return false end
   end
   self.index_enrichment=nil
-  if not matches(self,catalog)then
-   catalog={schema=1,home=self.settings.home,account=identity(self),phase='prepare',queue={},seen={},members={}}
+  if rebuild or not matches(self,catalog)then
+   local checked_at=matches(self,catalog)and catalog.checked_at or nil
+   catalog={schema=1,home=self.settings.home,account=identity(self),phase='prepare',queue={},seen={},members={},checked_at=checked_at}
    self.state.catalog=catalog
   end
   local done=catalog.phase~='ready'and(catalog.processed or 0)or 0

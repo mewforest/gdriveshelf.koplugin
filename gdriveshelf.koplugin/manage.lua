@@ -219,7 +219,7 @@ function M.install(Shelf,env)
    bar(labels.auto,usage.auto,(settings.auto_mib or 3072)*1048576,env.binaryBytes),
    bar('Metadata cache',usage.meta,(settings.meta_mib or 256)*1048576,env.binaryBytes),
    {label=tr('Safety reserve: 512 MiB · active files are protected')},
-   {label=tr('Document folder'),detail=books_dir},
+   {label=tr('Folder for cache and downloads'),detail=books_dir},
    {label=tr('Progress and snapshots'),detail=F('%s · index and queue: %s',env.bytes(stats.progress),env.bytes(stats.index))}}
  end
  function Shelf:showMemory()
@@ -255,9 +255,9 @@ function M.install(Shelf,env)
    end
    return result
   end
-  header=require('gdriveshelf/browser').header{width=require('device').screen:getWidth(),title=tr('Storage and cache'),
+  header=require('gdriveshelf/browser').header{width=require('device').screen:getWidth(),title=tr('Data and storage'),
    status=tr('Checking storage…'),buttons={},bars=memoryBars(stats,self.settings,core.storage.books_dir),close=function()close(menu)end,back=function()close(menu)end}
-  menu=self:menu(tr('Storage and cache'),rows(),{header=header,icons=true,perpage=7,multiline=true,close=function()
+  menu=self:menu(tr('Data and storage'),rows(),{header=header,icons=true,perpage=7,multiline=true,close=function()
    if self.memory_menu==menu then self.memory_menu=nil end
    if self.memory_measuring==menu then
     self.memory_measuring=nil
@@ -298,10 +298,10 @@ function M.install(Shelf,env)
    close(menu)
    if self.memory_menu and self.memory_menu.refreshMemory then self.memory_menu.refreshMemory()end
   end
-  menu=self:menu(tr('Document folder'),{{text=self.core.storage.books_dir,select_enabled=false},
+  menu=self:menu(tr('Folder for cache and downloads'),{{text=self.core.storage.books_dir,select_enabled=false},
    {text=tr('Choose document folder'),icon='appbar.filebrowser',callback=function()self:chooseBooksFolder(complete)end},
    {text=tr('Enter an absolute path'),icon='edit',callback=function()
-    self:input(tr('Document folder'),self.core.storage.books_dir,function(path)return self:moveBooks(path,complete)end)
+    self:input(tr('Folder for cache and downloads'),self.core.storage.books_dir,function(path)return self:moveBooks(path,complete)end)
    end},
   },{icons=true,multiline=true,back=true})
   return menu
@@ -342,8 +342,8 @@ function M.install(Shelf,env)
     self:input(tr('Google Drive folder ID or link'),self.settings.home,function(value)
      local id=value:match('/folders/([%w_-]+)')or value:match('[?&]id=([%w_-]+)')or value
      if not id:match('^[%w_-]+$')then return false,tr('Invalid folder ID')end
-     self.settings.home=id;self:saveSettings()
      close(menu)
+     self:setHomeFolder(id)
      if after then after()end
      return true
     end)

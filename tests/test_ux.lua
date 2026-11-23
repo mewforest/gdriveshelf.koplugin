@@ -13,8 +13,10 @@ H.test('main menu opens the library directly and keeps settings separate',functi
  assert(items.gdriveshelf_settings and items.gdriveshelf_settings.callback)
 end)
 H.test('settings expose independent offline and light mode checkboxes',function()
- local p=instance();local m=p:showSettings();assert(m and #m.item_table==8)
+ local p=instance();local m=p:showSettings();assert(m and #m.item_table==10)
  assert(m.item_table[1].checked~=nil and m.item_table[2].checked~=nil)
+ assert(m.item_table[3].text:find('Library indexing',1,true))
+ H.eq(m.item_table[4].text,'Folder for cache and downloads');H.eq(m.item_table[5].text,'Data and storage')
 end)
 H.test('folder contents have no navigation or action pseudo-file',function()
  local p=instance();local rows=p:folderRows('p',{{id='a',name='1.cbz',parent_id='p'}},false)
@@ -50,6 +52,31 @@ H.test('stable comic header and file grid do not depend on remote beta features'
  local hidden=p:browserPresentation('p',entries)
  assert(not hidden.header);H.eq(hidden.rows,2)
 end)
+H.test('pending folder data is shown in the title header and on the folder card',function()
+ local p=instance();local folder={id='p',name='Manga',is_folder=true,parent_id='home'}
+ p.core.state.folders.p=folder
+ p.core.loadingFolders=function()return {p=true}end
+ local chapter={id='a',name='1.cbz',parent_id='p'}
+ H.eq(p:browserPresentation('p',{chapter}).cover_loading,'Loading data…')
+ H.eq(p:folderRows('home',{folder},false)[1].cover_loading,'Loading data…')
+ H.eq(p:folderRows('home',{folder},true)[1].cover_loading,nil)
+ p.core.titleInfo=function()return {cover_path='/art.png'}end
+ p.folder_facts={}
+ H.eq(p:folderRows('home',{folder},false)[1].cover_loading,nil)
+ H.eq(p:browserPresentation('p',{chapter}).cover_loading,nil)
+end)
+H.test('a revealed cover keeps its folder on the same page until the next visit',function()
+ local p=instance();p.folder_visit={}
+ local folders={{id='a',name='A',is_folder=true},{id='z',name='Z',is_folder=true}}
+ local loaded=false
+ p.core.titleInfo=function(_,id)return {cover_path=loaded and id=='z'and '/art.png'or nil}end
+ H.eq(p:folderRows('home',folders,false)[2].entry.id,'z')
+ loaded=true;p.folder_facts={}
+ local row=p:folderRows('home',folders,false)[2]
+ H.eq(row.entry.id,'z');H.eq(row.icon_file,'/art.png')
+ p.folder_visit={}
+ H.eq(p:folderRows('home',folders,false)[1].entry.id,'z')
+end)
 H.test('the comic header shows the reading date and the resume row omits the opened suffix',function()
  local p=instance();p.settings.light_mode=true
  local chapter={id='a',name='1.cbz',parent_id='p'}
@@ -77,10 +104,10 @@ H.test('offline chapters use the full cloud listing for totals when available',f
  view=p:browserPresentation('p',{chapter})
  H.eq(view.stats,'In cloud: 2 files · 3 kB');H.eq(view.cached,'On device: 1 file · 1 kB')
 end)
-H.test('catalog settings expose explicit recursive consent and stable cover controls',function()
+H.test('catalog settings keep cover controls and move indexing to the main screen',function()
  local p=instance();local rows=p:showSettingsCategory('catalog').item_table;local text={}
  for _,row in ipairs(rows)do text[#text+1]=row.text end
- local all=table.concat(text,'\n');assert(all:find('recursively',1,true));assert(all:find('Hide empty',1,true));assert(all:find('downloaded documents',1,true))
+ local all=table.concat(text,'\n');assert(not all:find('recursively',1,true));assert(all:find('Hide empty',1,true));assert(all:find('downloaded documents',1,true))
  local beta=p:showSettingsCategory('experimental').item_table
  for _,row in ipairs(beta)do assert(not row.text:find('information header',1,true))end
 end)
