@@ -1,6 +1,7 @@
 local Catalog=require('gdriveshelf/catalog')
 local Cache=require('gdriveshelf/cache')
 local Library=require('gdriveshelf/library')
+local Manage=require('gdriveshelf/manage')
 local Metadata=require('gdriveshelf/metadata')
 local SDR=require('gdriveshelf/sdr')
 local Sync=require('gdriveshelf/sync')
@@ -260,6 +261,7 @@ function Core:folder(parent,name,callback,force,revalidate)
   if entries then self:rememberList(parent,entries)end
   for _,fn in ipairs(listeners)do fn(entries,false,err)end
   if not entries then return end
+  if self.settings.keep_read_chapters then self:emit('read_cache_ready')end
   local current=self.catalog_folder==parent and self.catalog_visible~=false
   if current or not self.settings.light_mode then self:metadata(entries,current)end
   if explicit or not self.settings.light_mode then self:flushPending(explicit)end
@@ -540,8 +542,9 @@ function Core:prefetch(entry,fraction)
  if limit==0 then return end
  local list=self:cachedList(entry.parent_id)
  local numbers=self:importedMetadata(list).chapter_numbers
+ local expired=self.settings.keep_read_chapters and Manage.readCachePolicy(self)
  for _,next_entry in ipairs(Library.next(list,entry.id,limit,self.settings.sort,self.settings.reverse,self.natural,numbers))do
-  if (allowBooks or Catalog.kind(next_entry,self.state)=='comics')and not self:cached(next_entry.id)then
+  if (allowBooks or Catalog.kind(next_entry,self.state)=='comics')and not self:cached(next_entry.id)and not (expired and expired(next_entry))then
    if not self.state.downloads[next_entry.id] or not self.jobs.keys or not self.jobs.keys['download:'..next_entry.id]then
     self:download(next_entry,'auto',nil,true,light)
    end

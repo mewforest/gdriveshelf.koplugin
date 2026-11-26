@@ -67,6 +67,39 @@ test('native restore rewrites doc_path and only advances base after successful f
  assert(p:applyRemote(e,remote,'/cache/a.cbz'));assert(saved.doc_path=='/cache/a.cbz' and saved.last_page==4)
  assert(core.state.sync.bases.a.lua==remote.lua)
 end)
+test('native unread reset uses KOReader purge and verifies the reading files are gone',function()
+ local calls,remaining=0,true
+ local previous=package.loaded.docsettings
+ package.loaded.docsettings={
+  open=function()return {data={last_page=7},purge=function(_,keep,what)
+   assert(keep==nil and what.doc_settings and not what.custom_cover_file);calls=calls+1;remaining=false
+  end}end,
+  hasSidecarFile=function()return remaining end,
+ }
+ local p=instance({})
+ p.invalidateNativeReadingStatus=function()end
+ assert(p:purgeChapterSidecar('/cache/a.cbz'));assert(calls==1 and not remaining)
+ package.loaded.docsettings=previous
+end)
+test('a partly read file offers a confirmed reset and can still be marked read',function()
+ local entry={id='a',parent_id='folder',name='A.cbz',version='1'}
+ local calls=0
+ local core={state={docs={a=entry},entries={},sync={conflicts={}}},
+  cached=function()end,chapterSummary=function()return {status='reading',page=7}end,
+  protected=function()return {}end,
+  resetChapterProgress=function(_,selected)assert(selected==entry);calls=calls+1;return true end}
+ local p=instance(core)
+ local rows
+ p.menu=function(_,_,items)rows=items end
+ p.confirmation=function(_,options)return options end
+ p:fileActions(entry)
+ assert(rows[4].text=='Mark as read' and rows[4].select_enabled)
+ assert(rows[5].text=='Mark as unread')
+ rows[5].callback()
+ assert(calls==0)
+ shown[#shown].ok_callback()
+ assert(calls==1)
+end)
 test('active book and newer pending edits block remote application',function()
  local core={state={entries={a={id='a',path='/cache/a.cbz'}},docs={a={id='a'}},sync={pending={a={lua='new local'}},bases={},conflicts={}}}}
  local p=instance(core,{document={file='/cache/a.cbz'}})

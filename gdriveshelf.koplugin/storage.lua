@@ -15,6 +15,8 @@ function S.key(value) return (tostring(value):gsub('.',function(c)return string.
 function S.new(o)
  local self=setmetatable({root=o.root,account=o.account or o.root,books_dir=o.books_dir or o.root..'/Books',json=o.json or require('json'),lfs=o.lfs or require('libs/libkoreader-lfs')},S)
  self:mkdir(self.root);self:mkdir(self.root..'/jobs');self:mkdir(self.books_dir);self:mkdir(self.root..'/meta');self:mkdir(self.root..'/snapshots')
+ local marker=self.root..'/.nomedia'
+ if not self.lfs.symlinkattributes(marker)then self:write(marker,'')end
  return self
 end
 function S:mkdir(path)

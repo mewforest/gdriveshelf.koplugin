@@ -149,18 +149,23 @@ function Shelf:init()
  self:onDispatcherRegisterActions()
  local core=self:getCore();local current=self:activeEntry()
  if current then core.active_id=current.id;core.opening_id=nil;self:installEndHook()end
- ui():nextTick(function()self:runAction(function()if not self.ui.tearing_down then core:resume();if current then
-  if self.settings.light_mode then
-   local doc=self.ui.doc_settings
-   local fraction=doc and doc.readSetting and tonumber(doc:readSetting('percent_finished'))
-   local page=doc and doc.readSetting and tonumber(doc:readSetting('last_page'))
-   if not fraction and page and self.ui.document and self.ui.document.getPageCount then
-    local pages=self.ui.document:getPageCount()
-    if pages and pages>0 then fraction=page/pages end
-   end
-   core:prefetch(current,fraction)
-  elseif self.settings.immediate then core:prefetch(current)end
- end end end)end)
+ ui():nextTick(function()self:runAction(function()
+  if self.ui.tearing_down then return end
+  core:resume()
+  if current then
+   if self.settings.light_mode then
+    local doc=self.ui.doc_settings
+    local fraction=doc and doc.readSetting and tonumber(doc:readSetting('percent_finished'))
+    local page=doc and doc.readSetting and tonumber(doc:readSetting('last_page'))
+    if not fraction and page and self.ui.document and self.ui.document.getPageCount then
+     local pages=self.ui.document:getPageCount()
+     if pages and pages>0 then fraction=page/pages end
+    end
+    core:prefetch(current,fraction)
+   elseif self.settings.immediate then core:prefetch(current)end
+  end
+  if not self.ui.document and self.scheduleReadCacheCleanup then self:scheduleReadCacheCleanup()end
+ end)end)
 end
 function Shelf:menu(title,rows,options)
  options=options or {};local Menu=require('ui/widget/menu');local Device=require('device');local menu
@@ -346,6 +351,36 @@ function Shelf:activeEntry()
  for id,e in pairs(self.core.state.entries)do if e.path==path then return e end end
  local alias=(self.core.state.relocation_aliases or {})[path];if alias then return self.core.state.entries[alias]or self.core.state.docs[alias]end
 end
+function Shelf:invalidateNativeReadingStatus(path)
+ local BookList=require('ui/widget/booklist')
+ ui():broadcastEvent(require('ui/event'):new('InvalidateMetadataCache',path))
+ BookList.setBookInfoCacheProperty(path,'been_opened',false)
+ require('readhistory'):fileSettingsPurged(path)
+end
+function Shelf:purgeChapterSidecar(path,doc)
+ local settings=require('docsettings')
+ doc=doc or settings:open(path)
+ doc:purge(nil,{doc_settings=true})
+ if settings:hasSidecarFile(path)then return nil,tr('Could not remove KOReader metadata')end
+ for _,candidate in ipairs(doc.candidates or {})do
+  if self.core.storage and self.core.storage:exists(candidate.path)then
+   return nil,tr('Could not remove KOReader metadata')
+  end
+ end
+ self:invalidateNativeReadingStatus(path)
+ return true
+end
+function Shelf:applyLocalChapterReset(entry,path,doc)
+ local core=self.core
+ if not core.needsChapterReset or not core:needsChapterReset(entry)then return true end
+ if not path then return true end
+ local ok,err=self:purgeChapterSidecar(path,doc)
+ if not ok then return nil,err end
+ if doc then doc.data={doc_path=path}end
+ -- An evicted archive may be needed to resolve its hash-based sidecar.
+ if core.storage:exists(path)then return core:chapterResetApplied(entry)end
+ return true
+end
 function Shelf:applyRemote(entry,record,path,allow_pending)
  local active=self:activeEntry()
  if (active and active.id==entry.id)or self.core.active_id==entry.id then return nil,tr("Close this book before restoring progress, then reopen it.")end
@@ -353,11 +388,15 @@ function Shelf:applyRemote(entry,record,path,allow_pending)
  local cached=(self.core.state.entries or {})[entry.id]or entry
  if not record or not record.lua or not sameBook(record.book_stamp,cached)then return nil,tr("The book version has changed or cannot be verified. Progress was not applied.")end
  local data,e=SDR.decode(record.lua);if not data then return nil,e end
- data.doc_path=path
- local DocSettings=require('docsettings')
- local settings=DocSettings:open(path)
- local ok,result=pcall(settings.flush,settings,data)
- if not ok or not result then return nil,tr("Could not save KOReader metadata") end
+ if SDR.isReadingReset and SDR.isReadingReset(data)then
+  local ok,err=self:purgeChapterSidecar(path)
+  if not ok then return nil,err end
+ else
+  data.doc_path=path
+  local settings=require('docsettings'):open(path)
+  local ok,result=pcall(settings.flush,settings,data)
+  if not ok or not result then return nil,tr("Could not save KOReader metadata") end
+ end
  if not allow_pending then
   self.core.state.sync.bases[entry.id]={lua=record.lua,stamp=record.stamp,book_stamp=record.book_stamp}
   self.core:save()
@@ -384,6 +423,8 @@ end
 function Shelf:openDownloadedEntry(entry,resume,path,e)
   self._end_dialog=nil
   if not path then problem(e);return end
+  local reset,reset_error=self:applyLocalChapterReset(entry,path)
+  if not reset then self.core.opening_id=nil;problem(reset_error);return end
   local DocSettings=require('docsettings')
   local cached=(self.core.state.entries or {})[entry.id]
   local hasNative=DocSettings:hasSidecarFile(path)
@@ -421,6 +462,12 @@ function Shelf:fileActions(entry)
  local supported=Library.supported(entry)
  local summary=supported and self.core.chapterSummary and self.core:chapterSummary(entry)
  local read=summary and summary.status=='complete'
+ local started=summary and (read or summary.status=='reading' or summary.status=='abandoned'
+  or (summary.page or 0)>0 or (summary.percent or 0)>0)
+ local core=self.core
+ local indexed=core.state and core.state.docs and core.state.docs[entry.id]
+ local path=cached and cached.path or indexed and indexed.local_path
+ if supported and not started and path and core.storage and require('docsettings'):hasSidecarFile(path)then started=true end
  local menu
  local function close()if menu and not menu._closed then menu:onCloseAllMenus()end end
  local rows={
@@ -432,10 +479,10 @@ function Shelf:fileActions(entry)
    close()
    if cached then self:confirmManagedRemoval({{id=entry.id,path=cached.path,pool=cached.pool,size=cached.size}})end
   end},
-  {icon='bookmark',text=tr(read and "Mark as unread" or "Mark as read"),select_enabled=supported,callback=function()
+  {icon='bookmark',text=tr("Mark as read"),select_enabled=supported and not read,callback=function()
    local active=self:activeEntry()
    if active and active.id==entry.id then message(tr("Close the book first"));return end
-   local ok,err=self.core:setChapterRead(entry,not read)
+   local ok,err=self.core:setChapterRead(entry,true)
    if not ok then problem(err);return end
    if cached and sameBook(cached,entry) and require('docsettings'):hasSidecarFile(cached.path)then
     ok,err=self:writeChapterMark(entry,cached.path)
@@ -447,6 +494,29 @@ function Shelf:fileActions(entry)
   {icon='bookmark',text=tr("Recover reading progress"),select_enabled=supported,callback=function()close();self:showRecovery(entry)end},
   {icon='info',text=tr("Information"),callback=function()close();self:showInfo(entry.parent_id)end},
  }
+ if supported and started then
+  local row={icon='bookmark',text=tr('Mark as unread'),callback=function()
+   close()
+   ui():show(self:confirmation{
+    text=tr('Reset reading progress? This removes the saved position and annotations for this file.'),
+    ok_text=tr('Mark as unread'),ok_callback=function()
+     if core:protected()[entry.id]then message(tr('Close the book first'));return end
+     local current=core.state.entries[entry.id]
+     local known=core.state.docs[entry.id]
+     local local_path=current and sameBook(current,entry) and current.path
+     if not current and known and sameBook(known,entry)then local_path=known.local_path end
+     if local_path and not core.storage:managedPath({id=entry.id,pool='auto',path=local_path})then
+      problem('Could not remove KOReader metadata');return
+     end
+     local ok,err=core:resetChapterProgress(entry)
+     if not ok then problem(err);return end
+     ok,err=self:applyLocalChapterReset(entry,local_path)
+     if not ok then problem(err)end
+     if self.folder_visit then self.folder_visit.resume_started=nil;self:startFolderResume()end
+    end})
+  end}
+  if read then rows[4]=row else table.insert(rows,5,row)end
+ end
  if self.settings and self.settings.beta_quick_preview and entry.name:lower():match('%.cbz$') then
   table.insert(rows,2,{icon='appbar.pageview',text=tr('Quick CBZ preview'),callback=function()close();self:showQuickPreview(entry)end})
  end
@@ -597,6 +667,7 @@ function Shelf:showConflict(entry)
 end
 function Shelf:snapshotCurrent()
  local entry=self:activeEntry();if not entry or not self.ui.doc_settings then return end
+ if self.core.needsChapterReset and self.core:needsChapterReset(entry)then return end
  local text,e=SDR.encode(self.ui.doc_settings.data);if not text then problem(e);return end
  local ok,why=self.core.storage:writeJSON(self.core.storage.root..'/snapshots/'..Storage.key(entry.id)..'.json',{lua=text,book_stamp=stamp(self.core.state.entries[entry.id]or entry)})
  if not ok then problem(why);return end
@@ -761,6 +832,29 @@ function Shelf:onSaveSettings()
  self:saveSettings()
 end
 function Shelf:onFlushSettings()self:onSaveSettings()end
+function Shelf:onDocSettingsLoad(doc)
+ local entry=self:activeEntry()
+ if not entry then return end
+ local path=self.ui.document.file
+ local ok,err=self:applyLocalChapterReset(entry,path,doc)
+ if not ok then doc.data={doc_path=path};problem(err);return end
+ local core=self.core
+ if not core.stageChapterResetForNativeOpen then return end
+ local record
+ local native=require('docsettings'):hasSidecarFile(path) and doc.data or nil
+ record,err=core:stageChapterResetForNativeOpen(entry,native)
+ if record then
+  ok,err=self:purgeChapterSidecar(path,doc)
+  if ok then
+   doc.data={doc_path=path}
+   ok,err=core:completeDeferredProgress(entry,record)
+  end
+ end
+ if err and (type(err)~='table' or err.code~='conflict')then problem(err)end
+end
+function Shelf:onReaderReady()
+ if self.scheduleReadCacheCleanup then self:scheduleReadCacheCleanup()end
+end
 function Shelf:onCloseDocument()
  self:clearReaderTransfer()
  -- ReaderUI may defer its native SaveSettings until after CloseDocument.
@@ -768,6 +862,7 @@ function Shelf:onCloseDocument()
  if self.ui.saveSettings then self.ui:saveSettings()end
  if self.settings.light_mode and self:activeEntry() then self.core.reading_sync_due=true end
  self:snapshotCurrent();if self.ui.document then self.core:finishRelocationForPath(self.ui.document.file)end;self.core.active_id=nil;self.core.opening_id=nil;self._end_dialog=nil
+ if self.scheduleReadCacheCleanup then self:scheduleReadCacheCleanup()end
 end
 function Shelf:onPageUpdate(page)
  local entry=self:activeEntry();if not entry then return end

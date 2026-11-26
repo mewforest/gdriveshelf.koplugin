@@ -191,4 +191,12 @@ test('same-size metadata races fail closed before restoration', function()
  local result,e=sync:pull(book);assert(not result and e.code=='metadata_changed')
 end)
 
+test('marking a reset chapter read removes its cloud reset marker', function()
+ local p,storage=fixture();remote(p,2)
+ p.texts.meta=assert(sdr.encode({gdriveshelf_reset=true,summary={status='new'}}))
+ local sync=Sync.new{provider=p,storage=storage,state={}}
+ local action=assert(sync:push(book,assert(sync:markChapter(book,true))))
+ assert(action.action=='pushed' and not sdr.isReadingReset(action.data))
+ assert(sdr.summary(action.data).status=='complete')
+end)
 print('Sync: '..n..' tests passed')

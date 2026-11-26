@@ -181,7 +181,11 @@ function M.sameBook(a,b)
 end
 function M.sidecarName(name) return (name:gsub('%.[^%.]+$','')) .. '.sdr' end
 function M.metadataName(name) return 'metadata.' .. (name:match('%.([^%.]+)$') or '') .. '.lua' end
+function M.isReadingReset(data)
+    return type(data)=='table' and data.gdriveshelf_reset==true
+end
 function M.summary(data)
+    if M.isReadingReset(data) then return {status='new'} end
     data=data or {}
     local percent=tonumber(data.percent_finished)
     local page=tonumber(data.last_page)
@@ -192,6 +196,7 @@ function M.summary(data)
     return {percent=percent,page=page,status=type(data.summary)=='table' and data.summary.status or nil}
 end
 function M.setReadingStatus(data,status,date)
+    if status~='new' then data.gdriveshelf_reset=nil end
     if type(data.summary)~='table' then data.summary={} end
     data.summary.status=status
     data.summary.modified=date

@@ -1,9 +1,12 @@
 -- Local archive management and account settings. Index and reading data stay
 -- outside the archive selection, even when both cache pools are selected.
 local M={}
+local Catalog=require('gdriveshelf/catalog')
+local Library=require('gdriveshelf/library')
+local SDR=require('gdriveshelf/sdr')
 local tr=require('gdriveshelf/i18n').gettext
 local F=require('gdriveshelf/i18n').format
-local accountKeys={'home','books_dir','index_enabled','index_recursive_confirmed','index_needs_confirmation'}
+local accountKeys={'home','books_dir','index_enabled','index_recursive_confirmed','index_needs_confirmation','keep_read_chapters'}
 function M.accountHome(settings,account)
  if not settings.home_account then settings.home_account=account;return true end
  if settings.home_account==account then return false end
@@ -31,6 +34,90 @@ local function isArchive(entry)return entry.pool=='auto' or entry.pool=='offline
 local function target(id,entry,size)
  return {id=id,path=entry.path,pool=entry.pool,size=size or entry.size or 0,
   parent_id=entry.parent_id,name=entry.name or id}
+end
+local function readComic(core,entry)
+ if not Library.supported(entry) or Catalog.kind(entry,core.state)~='comics' then return false end
+ local summary=core:chapterSummary(entry)
+ return summary and summary.status=='complete'
+end
+local function validRetention(count)
+ return type(count)=='number' and count>=0 and count<=1048576 and count%1==0
+end
+local function retentionRule(core,count)
+ local expired={}
+ return function(entry)
+  if not validRetention(count) then return false end
+  local parent=entry.parent_id
+  if not parent then return false end
+  if count==0 then return readComic(core,entry) end
+  if not expired[parent] then
+   local victims={}
+   expired[parent]=victims
+   local listing=core.state.listings[parent]
+   if listing and listing.complete and not listing.dirty then
+    local chapters={}
+    local listing_entries=core:cachedList(parent)
+    for _,chapter in ipairs(listing_entries)do
+     if chapter.parent_id==parent and Library.supported(chapter) and Catalog.kind(chapter,core.state)=='comics' then
+      chapters[#chapters+1]=chapter
+     end
+    end
+    local numbers=core.importedMetadata and core:importedMetadata(listing_entries).chapter_numbers
+    chapters=Library.ordered(chapters,'natural',false,core.natural,numbers)
+    local farthest=0
+    local read={}
+    for i,chapter in ipairs(chapters)do
+     if readComic(core,chapter) then read[i]=chapter.id;farthest=i end
+    end
+    for i=1,farthest-count do
+     if read[i] then victims[read[i]]=true end
+    end
+   end
+  end
+  return expired[parent][entry.id]==true
+ end
+end
+function M.readCachePolicy(core)
+ return retentionRule(core,core.settings.keep_read_chapters)
+end
+local function retentionEligibility(core,count,last_path)
+ local expired=retentionRule(core,count)
+ local protected=core:protected()
+ return function(entry)
+  if core.retired or core.relocating or not entry.ready or entry.pool~='auto'
+    or entry.path==last_path or protected[entry.id] then return false end
+  local current=core.state.docs[entry.id]
+  if current and (current.parent_id~=entry.parent_id or current.name~=entry.name
+    or (current~=entry and not SDR.sameBook(current,entry))) then return false end
+  return expired(current or entry)
+ end
+end
+function M.readCacheTargets(core,count,last_path)
+ if not validRetention(count) then return {} end
+ local eligible=retentionEligibility(core,count,last_path)
+ local entries,registry={},nil
+ for id,entry in pairs(core.state.entries)do
+  if eligible(entry) then
+   registry=registry or core.storage:bookRegistry()
+   local owned,attr=core.storage:managedPath(entry,registry)
+   if owned and attr then
+    local item=target(id,entry,attr.size)
+    item.version,item.checksum,item.modified_time=entry.version,entry.checksum,entry.modified_time
+    entries[#entries+1]=item
+   end
+  end
+ end
+ table.sort(entries,function(a,b)return a.id<b.id end)
+ return entries
+end
+local function sameTargets(first,second)
+ if #first~=#second then return false end
+ for i,item in ipairs(first)do
+  local other=second[i]
+  for key,value in pairs(item)do if other[key]~=value then return false end end
+  for key in pairs(other)do if item[key]==nil then return false end end
+ end
+ return true
 end
 function M.inventory(core)
  local groups={}
@@ -69,7 +156,7 @@ local function targetsInPool(core,pool)
  end
  return entries
 end
-function M.remove(core,targets,schedule,done)
+function M.remove(core,targets,schedule,done,eligibility)
  if core.archive_removal then return false end
  local registry
  local result={removed=0,skipped=0,failed=0}
@@ -78,6 +165,7 @@ function M.remove(core,targets,schedule,done)
  local function step()
   local ids={}
   local protected=core:protected()
+  local eligible=eligibility and eligibility()
   for i=index,math.min(index+11,#targets)do
    local item=targets[i]
    local entry=core.state.entries[item.id]
@@ -85,8 +173,8 @@ function M.remove(core,targets,schedule,done)
     result.skipped=result.skipped+1
    else
     if isArchive(entry) and not registry then registry=core.storage:bookRegistry()or {}end
-    local owned=core.storage:managedPath(entry,registry)
-    if owned then ids[#ids+1]=item.id else result.skipped=result.skipped+1 end
+    local owned,attr=core.storage:managedPath(entry,registry)
+    if owned and (not eligible or eligible(entry,item,attr))then ids[#ids+1]=item.id else result.skipped=result.skipped+1 end
    end
   end
   core:evict(ids,true)
@@ -102,6 +190,9 @@ function M.remove(core,targets,schedule,done)
    core:emit('cleared')
   end
   done(result)
+  local deferred=core.read_cache_deferred
+  core.read_cache_deferred=nil
+  if deferred then deferred()end
  end
  schedule(step)
  return true
@@ -133,6 +224,37 @@ function M.install(Shelf,env)
  local function UI()return require('ui/uimanager')end
  local function close(widget)if widget and not widget._closed then UI():close(widget)end end
  local function schedule(fn)UI():scheduleIn(.01,fn)end
+ local function lastFile()
+  if G_reader_settings and G_reader_settings:readSetting('start_with')=='last' then
+   return G_reader_settings:readSetting('lastfile')
+  end
+ end
+ local function recheckRetention(core,count,previous)
+  return function()
+   local eligible=retentionEligibility(core,count,lastFile())
+   local current=core.settings.keep_read_chapters==previous
+   return function(entry,item,attr)
+    return current and attr and item.size==attr.size and item.version==entry.version
+     and item.checksum==entry.checksum and item.modified_time==entry.modified_time and eligible(entry)
+   end
+  end
+ end
+ function Shelf:scheduleReadCacheCleanup()
+  local core=self.core
+  if not core or core.retired or not validRetention(core.settings.keep_read_chapters) or core.read_cache_scheduled then return end
+  core.read_cache_scheduled=true
+  schedule(function()
+   core.read_cache_scheduled=nil
+   if core.retired or self.core~=core or core.relocating then return end
+   if core.archive_removal then
+    core.read_cache_deferred=function()self:scheduleReadCacheCleanup()end
+    return
+   end
+   local count=core.settings.keep_read_chapters
+   local targets=M.readCacheTargets(core,count,lastFile())
+   if #targets>0 then M.remove(core,targets,schedule,function()end,recheckRetention(core,count,count))end
+  end)
+ end
  local labels={auto='Temporary reading cache',offline='Offline downloads',meta='Covers, listings and metadata'}
  local actions={auto='Clear temporary reading cache',offline='Remove offline downloads',meta='Clear covers and metadata'}
  local function measure(core,key,work,done)
@@ -270,7 +392,70 @@ function M.install(Shelf,env)
   return menu
  end
  function Shelf:showCacheLimits(after)
-  local menu
+  local menu,refresh
+  local core=self.core
+  local label_retention=tr('Keep read chapters')
+  local function applyRetention(count)
+   self.settings.keep_read_chapters=count
+   self:saveSettings()
+   refresh()
+   self:scheduleReadCacheCleanup()
+  end
+  local function previewRetention(count,previous,choices)
+   local preview
+   local targets=M.readCacheTargets(core,count,lastFile())
+   local function rows()
+    local size=0
+    for _,entry in ipairs(targets)do size=size+entry.size end
+    local result={
+     {text=F('Chapters to remove: %d · Space to free: %s',#targets,env.bytes(size)),select_enabled=false},
+     {text=tr('Apply'),callback=function()
+      if self.core~=core or core.settings.keep_read_chapters~=previous then close(preview);return end
+      if core.relocating or core.archive_removal then env.message(tr('Wait for the current storage operation to finish.'));return end
+      local latest=M.readCacheTargets(core,count,lastFile())
+      if not sameTargets(targets,latest) then
+       targets=latest;self:replaceMenu(preview,rows())
+       return
+      end
+      close(preview)
+      if #targets==0 then close(choices);applyRetention(count);return end
+      M.remove(core,targets,schedule,function(stats)
+       if self.core~=core or core.retired or core.settings.keep_read_chapters~=previous then return end
+       if stats.failed>0 or stats.save_failed or stats.skipped>0 then
+        env.message(F('%d files removed, %d kept.',stats.removed,stats.failed+stats.skipped))
+        if stats.save_failed then env.message(tr('Some cache changes could not be saved.'))end
+        if after then after()end
+        return
+       end
+       close(choices);applyRetention(count)
+      end,recheckRetention(core,count,previous))
+     end},
+     {text=tr('Cancel'),callback=function()close(preview)end},
+    }
+    for _,entry in ipairs(targets)do
+     local folder=core.state.folders[entry.parent_id]
+     result[#result+1]={text=(folder and folder.name and folder.name..' / 'or '')..entry.name,mandatory=env.bytes(entry.size),select_enabled=false}
+    end
+    return result
+   end
+   preview=self:menu(label_retention,rows(),{multiline=true,back=true})
+  end
+  local function chooseRetention()
+   local choices
+   local previous=self.settings.keep_read_chapters
+   choices=self:menu(label_retention,{
+    {text=tr('Disabled'),checked=not validRetention(previous),callback=function()close(choices);applyRetention(nil)end},
+    {text=tr('Number of chapters'),mandatory=validRetention(previous)and tostring(previous)or nil,callback=function()
+     self:input(label_retention,validRetention(previous)and previous or 1,function(value)
+      local count=tonumber(value)
+      if not validRetention(count) then return false,tr('Invalid value')end
+      if not validRetention(previous) or count<previous then previewRetention(count,previous,choices)
+      else close(choices);applyRetention(count)end
+      return true
+     end,'number')
+    end},
+   },{icons=true,multiline=true,back=true})
+  end
   local function rows()
    local result={}
    for _,choice in ipairs{{'auto_mib','Temporary reading cache limit, MiB',3072},{'meta_mib','Metadata cache limit, MiB',256}}do
@@ -281,15 +466,20 @@ function M.install(Shelf,env)
       local number=tonumber(value)
       if not number or number~=math.floor(number)or number<1 or number>1048576 then return false,tr('Invalid value')end
       self.settings[key]=number;self:saveSettings()
-      self:replaceMenu(menu,rows())
-      if after then after()end
+      refresh()
       return true
      end,'number')
     end}
    end
+   local retention=self.settings.keep_read_chapters
+   result[#result+1]={text=label_retention,mandatory=validRetention(retention)and tostring(retention)or tr('Disabled'),callback=chooseRetention}
    return result
   end
   menu=self:menu(tr('Cache limits'),rows(),{multiline=true,back=true})
+  refresh=function()
+   if not menu._closed then self:replaceMenu(menu,rows())end
+   if after then after()end
+  end
   return menu
  end
  function Shelf:showDocumentFolder()

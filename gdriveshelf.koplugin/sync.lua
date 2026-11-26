@@ -38,7 +38,8 @@ function Sync:isOffline() return type(self.offline)=='function' and self.offline
 function Sync:snapshot(entry,data,force)
     local lua,e=self.sdr.encode(data); if not lua then return nil,err('invalid_local_metadata',e) end
     local old=self.state.pending[entry.id]; local base=self.state.bases[entry.id] or {}
-    if old and old.chapter_status and (old.entry.name~=entry.name or old.entry.parent_id~=entry.parent_id or not self.sdr.sameBook(old.book_stamp,entry)) then
+    if old and (old.chapter_status or old.reset_progress)
+        and (old.entry.name~=entry.name or old.entry.parent_id~=entry.parent_id or not self.sdr.sameBook(old.book_stamp,entry)) then
         return nil,err('book_changed','This chapter has changed; its pending progress was preserved')
     end
     if not force and old and old.lua==lua and old.entry.name==entry.name and old.entry.parent_id==entry.parent_id
@@ -90,6 +91,21 @@ function Sync:markChapter(entry,read)
             local remote=saved.remote_lua and self.sdr.decode(saved.remote_lua) or {}
             saved.local_lua=self.sdr.encode(self.sdr.setReadingStatus(remote,status,date))
         end
+    end
+    return pending
+end
+function Sync:resetChapter(entry,observed)
+    local old=self.state.pending[entry.id]
+    if old and (old.entry.name~=entry.name or old.entry.parent_id~=entry.parent_id or not self.sdr.sameBook(old.book_stamp,entry)) then
+        return nil,err('book_changed','This chapter has changed; its pending progress was preserved')
+    end
+    local pending,e=self:snapshot(entry,{gdriveshelf_reset=true,summary={status='new'}},true)
+    if not pending then return nil,e end
+    pending.reset_progress=true
+    if not pending.base_lua and observed and self.sdr.sameBook(observed.book_stamp,entry) then
+        pending.base_lua=observed.lua
+        pending.base_stamp=copy(observed.stamp)
+        pending.base_book_stamp=copy(observed.book_stamp)
     end
     return pending
 end
@@ -160,8 +176,9 @@ function Sync:push(entry,pending,intent,guard)
     if pending.base_lua then local be; base_data,be=self.sdr.decode(pending.base_lua); if not base_data then return nil,err('invalid_base',be) end end
     local current=entry
     if self.provider.stat then local se; current,se=self.provider:stat(entry.id); if not current then return nil,se or err('not_found','Source document disappeared') end end
-    if pending.chapter_status and not self.provider.stat then return nil,err('unguarded_write','Source chapter could not be verified') end
-    if pending.chapter_status and (current.id~=entry.id or current.name~=pending.entry.name or current.parent_id~=pending.entry.parent_id) then
+    local strict=pending.chapter_status or pending.reset_progress
+    if strict and not self.provider.stat then return nil,err('unguarded_write','Source chapter could not be verified') end
+    if strict and (current.id~=entry.id or current.name~=pending.entry.name or current.parent_id~=pending.entry.parent_id) then
         return conflict(pending,{book_stamp=stamp(current)},'book_changed')
     end
     local remote,re=self:pull(current)
@@ -184,9 +201,13 @@ function Sync:push(entry,pending,intent,guard)
         local_data=self.sdr.decode(write_lua)
         if not local_data then return nil,err('invalid_pending','Could not validate saved local progress') end
         action='push'
-    elseif (pending.chapter_status and not self.sdr.sameBook(pending.book_stamp,current))
+    elseif (strict and not self.sdr.sameBook(pending.book_stamp,current))
         or changed(self.sdr,pending.book_stamp,current) or changed(self.sdr,pending.base_book_stamp,current) then
         return conflict(pending,remote,'book_changed')
+    elseif pending.reset_progress then
+        if self.sdr.isReadingReset(remote.data) then remote.action='same';return remote end
+        if base_data and not self.sdr.sameMetadata(base_data,remote.data) then return conflict(pending,remote) end
+        action='push'
     elseif pending.status_only then
         local remote_status=self.sdr.summary(remote.data).status
         local base_status=self.sdr.summary(base_data).status
@@ -209,6 +230,7 @@ function Sync:push(entry,pending,intent,guard)
     if action=='same' or action=='pull' then
         remote.action=action; return remote
     end
+    if pending.reset_progress and guard and not guard() then return nil,err('cancelled','Reading progress changed before reset') end
     if remote.metadata and not remote.stamp.etag then return nil,err('unguarded_write','Provider supplied no conditional-write token; remote metadata was preserved') end
     local folder=remote.folder
     if not folder then
@@ -219,13 +241,14 @@ function Sync:push(entry,pending,intent,guard)
         if not verified.folder or verified.folder.id~=folder.id or verified.metadata then return nil,err('concurrent_creation','Remote sidecar changed during creation; retry from fresh state') end
     end
     local path,pe=self.storage:writeTemp(write_lua); if not path then return nil,pe end
-    if intent then
+    if intent or pending.reset_progress then
         local latest,se=self.provider:stat(entry.id)
-        local same=latest and self.sdr.sameBook(intent.book_stamp,latest)
+        local same=latest and self.sdr.sameBook(intent and intent.book_stamp or pending.book_stamp,latest)
             and latest.name==current.name and latest.parent_id==current.parent_id
-        if not same or not guard() then
+        if not same or (guard and not guard()) then
             if self.storage.remove then self.storage:remove(path) end
             if not latest then return nil,se end
+            if same and not intent then return nil,err('cancelled','Reading progress changed before reset') end
             return conflict(pending,remote,same and 'changed_during_resolution' or 'book_changed')
         end
     end
@@ -233,7 +256,7 @@ function Sync:push(entry,pending,intent,guard)
     if self.storage.remove then self.storage:remove(path) end
     if not ok then return nil,err('upload_failed',tostring(uploaded)) end
     if not uploaded then
-        if intent and ue and tonumber(ue.status)==412 then
+        if (intent or pending.reset_progress) and ue and tonumber(ue.status)==412 then
             local fresh,fe=self:pull(current)
             if not fresh then return nil,fe end
             return conflict(pending,fresh,'changed_during_resolution')

@@ -820,6 +820,10 @@ return function(Shelf,env)
  end
  local statusEvents={transfer=true,network_state=true,queued=true,download=true,indexing=true,progress_state=true,scanning=true,folder_scanning=true,relocating=true,sync_error=true}
  function Shelf:onCoreChange(kind,entry,err)
+  if self.scheduleReadCacheCleanup and (kind=='read_cache_ready' or kind=='indexed' or kind=='progress' or kind=='downloaded') then
+   if kind~='downloaded' or (entry and Library.supported(entry))then self:scheduleReadCacheCleanup()end
+  end
+  if kind=='read_cache_ready'then return end
   if self.folder_menu and not self.folder_menu._closed then
    local statusOnly=statusEvents[kind]
    if kind=='network_state' or (kind=='queued'and entry and self.core.state.downloads and

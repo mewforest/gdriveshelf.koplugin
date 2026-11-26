@@ -2,6 +2,7 @@
 -- only the UI process publishes it or grants a subsequent native restoration.
 local SDR=require('gdriveshelf/sdr')
 local Storage=require('gdriveshelf/storage')
+local Library=require('gdriveshelf/library')
 local function err(code,message)return {code=code,message=message}end
 local function copy(value)
  if type(value)~='table'then return value end
@@ -16,7 +17,7 @@ end
 local function persist(core,id,update)
  local state=queues(core)
  local previous={}
- for _,key in ipairs{'pending','bases','conflicts','resolutions','deferred','chapter_marks'}do
+ for _,key in ipairs{'pending','bases','conflicts','resolutions','deferred','chapter_marks','local_resets'}do
   if state[key]then previous[#previous+1]={state[key],copy(state[key][id])}end
  end
  local revision,seq=state.revision,state.next_pending_seq
@@ -60,6 +61,59 @@ local function fromResult(pending,result,reason)
 end
 
 return function(Core)
+ local function sameChapter(a,b)
+  return a and b and a.name==b.name and a.parent_id==b.parent_id and SDR.sameBook(a,b)
+ end
+
+ function Core:needsChapterReset(entry)
+  local resets=self.state.sync.local_resets
+  return entry and resets and sameChapter(resets[entry.id],entry) or false
+ end
+
+ function Core:chapterResetApplied(entry)
+  if not self:needsChapterReset(entry)then return true end
+  return persist(self,entry.id,function(state)
+   state.local_resets[entry.id]=nil
+   return true
+  end)
+ end
+
+ function Core:resetChapterProgress(entry)
+  if not entry or not entry.id or not entry.parent_id or not Library.supported(entry)then
+   return nil,err('book_changed','This chapter has changed; its progress was preserved')
+  end
+  local id=entry.id
+  local current=self.state.docs[id]
+  if (current and not sameChapter(current,entry)) or self:protected()[id] then
+   return nil,err('book_changed','This chapter has changed; its progress was preserved')
+  end
+  local state=queues(self)
+  state.local_resets=state.local_resets or {}
+  local remote_key='sdr:'..id
+  local obsolete=self.state.entries[remote_key]
+  local observed=self:remote(entry)
+  local conflict
+  local pending,e=persist(self,id,function(data)
+   local reset,why=self:sync():resetChapter(entry,observed)
+   if not reset then return nil,why end
+   data.local_resets[id]=copy(entry)
+   if data.chapter_marks then data.chapter_marks[id]=nil end
+   self.state.entries[remote_key]=nil
+   if self.state.progress_cache then self.state.progress_cache[id]=nil end
+   self.state.summaries[id]=SDR.summary(SDR.decode(reset.lua))
+   conflict=self:invalidateProgressChoice(entry,reset)
+   return reset
+  end)
+  if not pending then return nil,e end
+  self:cancelProgress()
+  if obsolete and obsolete.path then self.storage:remove(obsolete.path)end
+  if self.remote_ready then self.remote_ready[id]=nil end
+  if conflict then self:emit('conflict',entry)end
+  self:emit('progress',entry)
+  if self.settings.sync_enabled then self:flushPending(true)end
+  return pending
+ end
+
  function Core:resolveProgressConflict(entry,choice,expected,automatic,explicit)
   local state=queues(self)
   local saved,pending=state.conflicts[entry.id],state.pending[entry.id]
@@ -87,7 +141,7 @@ return function(Core)
  end
 
  local function selectAutomatic(core,entry,pending,saved)
-  if saved.reason~='both_changed' or not pending or pending.status_only or pending.chapter_status
+  if saved.reason~='both_changed' or not pending or pending.status_only or pending.chapter_status or pending.reset_progress
    or pending.revision~=saved.local_revision or not pending.base_lua
    or not SDR.sameBook(pending.book_stamp,saved.book_stamp)
    or not SDR.sameBook(pending.base_book_stamp,saved.book_stamp)
@@ -128,7 +182,8 @@ return function(Core)
      local data=saved and saved.sync
      local last=data and data.pending and data.pending[id]
      local choice=data and data.resolutions and data.resolutions[id]
-     return last and choice and last.revision==pending.revision and choice.id==intent.id
+     return last and last.revision==pending.revision
+      and (not intent or (choice and choice.id==intent.id))
     end
     local function publish(result,failure)
      if intent and state.resolutions[id]~=intent then
@@ -136,7 +191,14 @@ return function(Core)
       return
      end
      if not result then
+      if failure and failure.code=='cancelled' and not current()then self:flushPending(explicit);return end
       if not(failure and failure.silent)then self:emit('sync_error',entry,failure)end
+      return
+     end
+     local latest=state.pending[id]
+     if not current() and latest and latest.reset_progress
+       and (result.action=='pull' or result.action=='deferred' or result.action=='conflict')then
+      self:flushPending(explicit)
       return
      end
      if (result.action=='pull' and current())or result.action=='deferred' then
@@ -185,8 +247,8 @@ return function(Core)
      end
     end
     self:network('sync:'..id,function(provider)
-     return self:sync(provider):push(entry,pending,intent,intent and durable or nil)
-    end,publish,false,intent and function()
+     return self:sync(provider):push(entry,pending,intent,(intent or pending.reset_progress) and durable or nil)
+    end,publish,false,(intent or pending.reset_progress) and function()
      if not current()then return nil,{code='cancelled',silent=true}end
      return true
     end or nil,nil,false,{automatic=not explicit})
@@ -218,6 +280,7 @@ return function(Core)
  end
 
  function Core:snapshot(entry,data)
+  if self:needsChapterReset(entry)then return nil,err('disk','Could not remove KOReader metadata')end
   local conflict
   local pending,e=persist(self,entry.id,function()
    local saved,why=self:sync():snapshot(entry,data)
@@ -243,12 +306,12 @@ return function(Core)
   return a and b and a>b
  end
 
- function Core:deferredProgress(entry,native_data,observed)
+ function Core:deferredProgress(entry,native_data,observed,native_loading)
   local state=queues(self)
   local id=entry.id
   local staged=state.deferred[id]
   if self.settings.sync_enabled==false or not staged or state.conflicts[id]then return nil end
-  if self.active_id==id then return nil end
+  if (self.active_id==id and not native_loading) or self:needsChapterReset(entry)then return nil end
   if not SDR.sameBook(staged.book_stamp,entry)then return nil,err('book_changed','The book version has changed or cannot be verified. Progress was not applied.')end
   local cloud=SDR.decode(staged.lua)
   local expected=staged.expected_local_lua and SDR.decode(staged.expected_local_lua)
@@ -291,11 +354,12 @@ return function(Core)
   return true
  end
 
- function Core:stageRemoteProgress(entry,record,native_data)
+ function Core:stageRemoteProgress(entry,record,native_data,native_loading)
   local state=queues(self)
   local id=entry.id
-  if self.settings.sync_enabled==false or self.active_id==id then return nil end
-  if state.deferred[id] then return self:deferredProgress(entry,native_data,record) end
+  if self.settings.sync_enabled==false or (self.active_id==id and not native_loading)
+    or self:needsChapterReset(entry)then return nil end
+  if state.deferred[id] then return self:deferredProgress(entry,native_data,record,native_loading) end
   local pending=state.pending[id]
   if state.conflicts[id] or state.resolutions[id] or (pending and not pending.status_only)then return nil end
   local base=state.bases[id]
@@ -311,6 +375,7 @@ return function(Core)
   local cloud=SDR.decode(record.lua)
   if not cloud then return nil,err('invalid_remote_metadata','Could not read cloud progress')end
   local base_data=base and base.lua and SDR.decode(base.lua)
+  if SDR.isReadingReset(cloud) and SDR.sameMetadata(base_data,cloud)then return nil end
   local action=native_data and SDR.decide(base_data,native_data,cloud)or 'pull'
   if action=='push'then return nil end
   if action=='same'then
@@ -347,5 +412,14 @@ return function(Core)
    data.deferred[id]=staged
    return staged
   end)
+ end
+
+ function Core:stageChapterResetForNativeOpen(entry,native_data)
+  if self.settings.sync_enabled==false then return nil end
+  local state=queues(self)
+  local observed=self:remote(entry)
+  local candidate=state.deferred[entry.id] or observed
+  if not candidate or not candidate.lua or not SDR.isReadingReset(SDR.decode(candidate.lua))then return nil end
+  return self:stageRemoteProgress(entry,observed,native_data,true)
  end
 end
